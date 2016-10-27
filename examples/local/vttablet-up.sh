@@ -53,7 +53,7 @@ mkdir -p $VTDATAROOT/backups
 
 # Start 5 vttablets by default.
 # Pass a list of UID indices on the command line to override.
-uids=${@:-'0 1 2 3 4'}
+uids=${@:-'0 1 2'}
 
 # Start all mysqlds in background.
 for uid_index in $uids; do
@@ -107,6 +107,7 @@ for uid_index in $uids; do
     -restore_from_backup \
     -port $port \
     -grpc_port $grpc_port \
+    -queryserver-config-query-timeout 15 \
     -service_map 'grpc-queryservice,grpc-tabletmanager,grpc-updatestream' \
     -pid_file $VTDATAROOT/$tablet_dir/vttablet.pid \
     $dbconfig_flags \
