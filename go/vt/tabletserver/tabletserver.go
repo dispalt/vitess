@@ -15,7 +15,6 @@ import (
 	log "github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	"github.com/youtube/vitess/go/acl"
-	"github.com/youtube/vitess/go/cistring"
 	"github.com/youtube/vitess/go/history"
 	"github.com/youtube/vitess/go/mysql"
 	"github.com/youtube/vitess/go/sqltypes"
@@ -413,7 +412,10 @@ func (tsv *TabletServer) serveNewType() (err error) {
 	if tsv.target.TabletType == topodatapb.TabletType_MASTER {
 		err = tsv.qe.PrepareFromRedo()
 		if err != nil {
-			// TODO(sougou): raise alarms.
+			// If this operation fails, we choose to raise an alert and
+			// continue anyway. Serving traffic is considered more important
+			// than blocking everything for the sake of a few transactions.
+			tsv.qe.queryServiceStats.InternalErrors.Add("TwopcResurrection", 1)
 			log.Errorf("Could not prepare transactions: %v", err)
 		}
 	} else {
@@ -1008,56 +1010,10 @@ func (tsv *TabletServer) BeginExecuteBatch(ctx context.Context, target *querypb.
 }
 
 // SplitQuery splits a query + bind variables into smaller queries that return a
-// subset of rows from the original query.
-// TODO(erez): Remove this method and rename SplitQueryV2 to SplitQuery once we migrate to
-// SplitQuery V2.
-func (tsv *TabletServer) SplitQuery(ctx context.Context, target *querypb.Target, sql string, bindVariables map[string]interface{}, splitColumn string, splitCount int64) (splits []querytypes.QuerySplit, err error) {
-	err = tsv.execRequest(
-		ctx, tsv.QueryTimeout.Get(),
-		"SplitQuery", sql, bindVariables,
-		target, false, false,
-		func(ctx context.Context, logStats *LogStats) error {
-			splitter := NewQuerySplitter(sql, bindVariables, splitColumn, splitCount, tsv.qe.schemaInfo)
-			err = splitter.validateQuery()
-			if err != nil {
-				return NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "splitQuery: query validation error: %s, request: %v", err, querytypes.QueryAsString(sql, bindVariables))
-			}
-
-			defer func(start time.Time) {
-				addUserTableQueryStats(tsv.qe.queryServiceStats, ctx, splitter.tableName, "SplitQuery", int64(time.Now().Sub(start)))
-			}(time.Now())
-
-			qre := &QueryExecutor{
-				ctx:      ctx,
-				logStats: logStats,
-				qe:       tsv.qe,
-			}
-			columnType, err := getColumnType(qre, splitter.splitColumn, splitter.tableName)
-			if err != nil {
-				return err
-			}
-			var pkMinMax *sqltypes.Result
-			if sqltypes.IsIntegral(columnType) {
-				pkMinMax, err = getColumnMinMax(qre, splitter.splitColumn, splitter.tableName)
-				if err != nil {
-					return err
-				}
-			}
-			splits, err = splitter.split(columnType, pkMinMax)
-			if err != nil {
-				return NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "splitQuery: query split error: %s, request: %v", err, querytypes.QueryAsString(sql, bindVariables))
-			}
-			return nil
-		},
-	)
-	return splits, err
-}
-
-// SplitQueryV2 splits a query + bind variables into smaller queries that return a
 // subset of rows from the original query. This is the new version that supports multiple
 // split columns and multiple split algortihms.
 // See the documentation of SplitQueryRequest in proto/vtgate.proto for more details.
-func (tsv *TabletServer) SplitQueryV2(
+func (tsv *TabletServer) SplitQuery(
 	ctx context.Context,
 	target *querypb.Target,
 	sql string,
@@ -1255,6 +1211,7 @@ func validateSplitQueryParameters(
 			vtrpcpb.ErrorCode_BAD_INPUT,
 			"splitQuery: exactly one of {numRowsPerQueryPart, splitCount} must be"+
 				" non zero. Got: numRowsPerQueryPart=%v, splitCount=%v. SQL: %v",
+			numRowsPerQueryPart,
 			splitCount,
 			querytypes.QueryAsString(sql, bindVariables))
 	}
@@ -1682,43 +1639,14 @@ func Rand() int64 {
 	return rand.Int63()
 }
 
-// withTimeout returns a context based on whether the timeout is 0 or not.
+// withTimeout returns a context based on the specified timeout.
+// If the context is the background context or if timeout is 0, the
+// original context is returned as is.
+// TODO(sougou): cleanup code that treats background context as
+// special case.
 func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout == 0 {
+	if timeout == 0 || ctx == context.Background() {
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, timeout)
-}
-
-func getColumnType(qre *QueryExecutor, columnName cistring.CIString, tableName string) (querypb.Type, error) {
-	conn, err := qre.getConn(qre.qe.connPool)
-	if err != nil {
-		return sqltypes.Null, err
-	}
-	defer conn.Recycle()
-	// TODO(shengzhe): use AST to represent the query to avoid sql injection.
-	// current code is safe because QuerySplitter.validateQuery is called before
-	// calling this.
-	query := fmt.Sprintf("SELECT %v FROM %v LIMIT 0", columnName, tableName)
-	result, err := qre.execSQL(conn, query, true)
-	if err != nil {
-		return sqltypes.Null, err
-	}
-	if result == nil || len(result.Fields) != 1 {
-		return sqltypes.Null, NewTabletError(vtrpcpb.ErrorCode_BAD_INPUT, "failed to get column type for column: %v, invalid result: %v", columnName, result)
-	}
-	return result.Fields[0].Type, nil
-}
-
-func getColumnMinMax(qre *QueryExecutor, columnName cistring.CIString, tableName string) (*sqltypes.Result, error) {
-	conn, err := qre.getConn(qre.qe.connPool)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Recycle()
-	// TODO(shengzhe): use AST to represent the query to avoid sql injection.
-	// current code is safe because QuerySplitter.validateQuery is called before
-	// calling this.
-	minMaxSQL := fmt.Sprintf("SELECT MIN(%v), MAX(%v) FROM %v", columnName, columnName, tableName)
-	return qre.execSQL(conn, minMaxSQL, true)
 }

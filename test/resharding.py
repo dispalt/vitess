@@ -561,6 +561,13 @@ primary key (name)
     # check the binlog players are running and exporting vars
     self.check_destination_master(shard_2_master, ['test_keyspace/80-'])
     self.check_destination_master(shard_3_master, ['test_keyspace/80-'])
+    # When the binlog players/filtered replication is turned on, the query
+    # service must be turned off on the destination masters.
+    # The tested behavior is a safeguard to prevent that somebody can
+    # accidentally modify data on the destination masters while they are not
+    # migrated yet and the source shards are still the source of truth.
+    shard_2_master.wait_for_vttablet_state('NOT_SERVING')
+    shard_3_master.wait_for_vttablet_state('NOT_SERVING')
 
     # check that binlog server exported the stats vars
     self.check_binlog_server_vars(shard_1_slave1, horizontal=True)
@@ -835,6 +842,11 @@ primary key (name)
 
     # delete the original shard
     utils.run_vtctl(['DeleteShard', 'test_keyspace/80-'], auto_log=True)
+
+    # make sure we can't delete the destination shard now that it's serving
+    _, stderr = utils.run_vtctl(['DeleteShard', 'test_keyspace/80-c0'],
+                                expect_fail=True)
+    self.assertIn('is still serving, cannot delete it', stderr)
 
     # kill everything
     tablet.kill_tablets([shard_0_master, shard_0_replica, shard_0_ny_rdonly,

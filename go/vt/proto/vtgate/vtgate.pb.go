@@ -1292,14 +1292,10 @@ type SplitQueryRequest struct {
 	//    This algorithm supports multiple split_column's of any type,
 	//    but is slower than EQUAL_SPLITS.
 	Algorithm query.SplitQueryRequest_Algorithm `protobuf:"varint,7,opt,name=algorithm,enum=query.SplitQueryRequest_Algorithm" json:"algorithm,omitempty"`
-	// Whether to use the new split-query code
-	// that supports multiple split-columns and
-	// the FULL_SCAN algorithm.
-	// This is a temporary field which aids
-	// in the migration of SplitQuery to the new
-	// code.
-	// TODO(erez): Remove this field after the migration
-	// to the SplitQuery version 2.
+	// TODO(erez): This field is no longer used by the server code.
+	// Remove this field after this new server code is released to prod.
+	// We must keep it for now, so that clients can still send it to the old
+	// server code currently in production.
 	UseSplitQueryV2 bool `protobuf:"varint,8,opt,name=use_split_query_v2,json=useSplitQueryV2" json:"use_split_query_v2,omitempty"`
 }
 

@@ -150,10 +150,17 @@ func TestTxExecutorCommitRedoFail(t *testing.T) {
 		t.Error(err)
 	}
 	defer txe.RollbackPrepared("bb", 0)
+	db.AddQuery("update `_vt`.redo_log_transaction set state = 'Failed' where dtid = 'bb'", &sqltypes.Result{})
 	err = txe.CommitPrepared("bb")
 	want := "is not supported"
 	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("Prepare err: %v, must contain %s", err, want)
+		t.Errorf("txe.CommitPrepared err: %v, must contain %s", err, want)
+	}
+	// A retry should fail differently.
+	err = txe.CommitPrepared("bb")
+	want = "cannot commit dtid bb, state: failed"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("txe.CommitPrepared err: %v, must contain %s", err, want)
 	}
 }
 
@@ -318,11 +325,13 @@ func TestExecutorReadTransaction(t *testing.T) {
 		TimeCreated: 1,
 		TimeUpdated: 2,
 		Participants: []*querypb.Target{{
-			Keyspace: "test1",
-			Shard:    "0",
+			Keyspace:   "test1",
+			Shard:      "0",
+			TabletType: topodatapb.TabletType_MASTER,
 		}, {
-			Keyspace: "test2",
-			Shard:    "1",
+			Keyspace:   "test2",
+			Shard:      "1",
+			TabletType: topodatapb.TabletType_MASTER,
 		}},
 	}
 	if !reflect.DeepEqual(got, want) {

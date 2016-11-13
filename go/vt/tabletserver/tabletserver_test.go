@@ -692,16 +692,17 @@ func TestTabletServerReplicaToMaster(t *testing.T) {
 	tsv.SetServingType(topodatapb.TabletType_REPLICA, true, nil)
 	tpc := tsv.qe.twoPC
 
-	db.AddQuery(tpc.readPrepared, &sqltypes.Result{})
+	db.AddQuery(tpc.readAllRedo, &sqltypes.Result{})
 	tsv.SetServingType(topodatapb.TabletType_MASTER, true, nil)
 	if len(tsv.qe.preparedPool.conns) != 0 {
 		t.Errorf("len(tsv.qe.preparedPool.conns): %d, want 0", len(tsv.qe.preparedPool.conns))
 	}
 	tsv.SetServingType(topodatapb.TabletType_REPLICA, true, nil)
 
-	db.AddQuery(tpc.readPrepared, &sqltypes.Result{
+	db.AddQuery(tpc.readAllRedo, &sqltypes.Result{
 		Rows: [][]sqltypes.Value{{
 			sqltypes.MakeString([]byte("dtid0")),
+			sqltypes.MakeString([]byte("Prepared")),
 			sqltypes.MakeString([]byte("")),
 			sqltypes.MakeString([]byte("update test_table set name = 2 where pk in (1) /* _stream test_table (pk ) (1 ); */")),
 		}},
@@ -718,15 +719,22 @@ func TestTabletServerReplicaToMaster(t *testing.T) {
 	tsv.SetServingType(topodatapb.TabletType_REPLICA, true, nil)
 
 	// Ensure we continue past errors.
-	db.AddQuery(tpc.readPrepared, &sqltypes.Result{
+	db.AddQuery(tpc.readAllRedo, &sqltypes.Result{
 		Rows: [][]sqltypes.Value{{
 			sqltypes.MakeString([]byte("bogus")),
+			sqltypes.MakeString([]byte("Prepared")),
 			sqltypes.MakeString([]byte("")),
 			sqltypes.MakeString([]byte("bogus")),
 		}, {
 			sqltypes.MakeString([]byte("dtid0")),
+			sqltypes.MakeString([]byte("Prepared")),
 			sqltypes.MakeString([]byte("")),
 			sqltypes.MakeString([]byte("update test_table set name = 2 where pk in (1) /* _stream test_table (pk ) (1 ); */")),
+		}, {
+			sqltypes.MakeString([]byte("dtid1")),
+			sqltypes.MakeString([]byte("Failed")),
+			sqltypes.MakeString([]byte("")),
+			sqltypes.MakeString([]byte("unused")),
 		}},
 	})
 	tsv.SetServingType(topodatapb.TabletType_MASTER, true, nil)
@@ -737,6 +745,10 @@ func TestTabletServerReplicaToMaster(t *testing.T) {
 	want = []string{"update test_table set name = 2 where pk in (1) /* _stream test_table (pk ) (1 ); */"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Prepared queries: %v, want %v", got, want)
+	}
+	wantFailed := map[string]error{"dtid1": errPrepFailed}
+	if !reflect.DeepEqual(tsv.qe.preparedPool.reserved, wantFailed) {
+		t.Errorf("Failed dtids: %v, want %v", tsv.qe.preparedPool.reserved, wantFailed)
 	}
 	tsv.SetServingType(topodatapb.TabletType_REPLICA, true, nil)
 }
@@ -848,11 +860,13 @@ func TestTabletServerReadTransaction(t *testing.T) {
 		TimeCreated: 1,
 		TimeUpdated: 2,
 		Participants: []*querypb.Target{{
-			Keyspace: "test1",
-			Shard:    "0",
+			Keyspace:   "test1",
+			Shard:      "0",
+			TabletType: topodatapb.TabletType_MASTER,
 		}, {
-			Keyspace: "test2",
-			Shard:    "1",
+			Keyspace:   "test2",
+			Shard:      "1",
+			TabletType: topodatapb.TabletType_MASTER,
 		}},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -909,8 +923,7 @@ func TestTabletServerBeginFail(t *testing.T) {
 		t.Fatalf("StartService failed: %v", err)
 	}
 	defer tsv.StopService()
-	ctx := context.Background()
-	ctx, cancel := withTimeout(ctx, 1*time.Nanosecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 	defer cancel()
 	tsv.Begin(ctx, &target)
 	_, err = tsv.Begin(ctx, &target)
@@ -1386,49 +1399,6 @@ func TestTabletServerSplitQuery(t *testing.T) {
 			},
 		},
 	})
-	db.AddQuery("SELECT pk FROM test_table LIMIT 0", &sqltypes.Result{
-		Fields: []*querypb.Field{
-			{Name: "pk", Type: sqltypes.Int32},
-		},
-		RowsAffected: 1,
-		Rows: [][]sqltypes.Value{
-			{
-				sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
-			},
-		},
-	})
-	testUtils := newTestUtils()
-	config := testUtils.newQueryServiceConfig()
-	tsv := NewTabletServer(config)
-	dbconfigs := testUtils.newDBConfigs(db)
-	target := querypb.Target{TabletType: topodatapb.TabletType_MASTER}
-	err := tsv.StartService(target, dbconfigs, testUtils.newMysqld(&dbconfigs))
-	if err != nil {
-		t.Fatalf("StartService failed: %v", err)
-	}
-	defer tsv.StopService()
-	ctx := context.Background()
-	sql := "select * from test_table where count > :count"
-	if _, err := tsv.SplitQuery(ctx, &target, sql, nil, "", 10); err != nil {
-		t.Fatalf("TabletServer.SplitQuery should success: %v, but get error: %v", sql, err)
-	}
-}
-
-// TODO(erez): Rename to TestTabletServerSplitQuery once migration to SplitQuery is done.
-func TestTabletServerSplitQueryV2(t *testing.T) {
-	db := setUpTabletServerTest()
-	db.AddQuery("SELECT MIN(pk), MAX(pk) FROM test_table", &sqltypes.Result{
-		Fields: []*querypb.Field{
-			{Name: "pk", Type: sqltypes.Int32},
-		},
-		RowsAffected: 1,
-		Rows: [][]sqltypes.Value{
-			{
-				sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
-				sqltypes.MakeTrusted(sqltypes.Int32, []byte("100")),
-			},
-		},
-	})
 	testUtils := newTestUtils()
 	config := testUtils.newQueryServiceConfig()
 	tsv := NewTabletServer(config)
@@ -1441,7 +1411,7 @@ func TestTabletServerSplitQueryV2(t *testing.T) {
 	defer tsv.StopService()
 	ctx := context.Background()
 	sql := "select * from test_table where count > :count"
-	splits, err := tsv.SplitQueryV2(
+	splits, err := tsv.SplitQuery(
 		ctx,
 		&querypb.Target{TabletType: topodatapb.TabletType_RDONLY},
 		sql,
@@ -1460,50 +1430,6 @@ func TestTabletServerSplitQueryV2(t *testing.T) {
 
 func TestTabletServerSplitQueryInvalidQuery(t *testing.T) {
 	db := setUpTabletServerTest()
-	db.AddQuery("SELECT MIN(pk), MAX(pk) FROM test_table", &sqltypes.Result{
-		Fields: []*querypb.Field{
-			{Name: "pk", Type: sqltypes.Int32},
-		},
-		RowsAffected: 1,
-		Rows: [][]sqltypes.Value{
-			{
-				sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
-				sqltypes.MakeTrusted(sqltypes.Int32, []byte("100")),
-			},
-		},
-	})
-	db.AddQuery("SELECT pk FROM test_table LIMIT 0", &sqltypes.Result{
-		Fields: []*querypb.Field{
-			{Name: "pk", Type: sqltypes.Int32},
-		},
-		RowsAffected: 1,
-		Rows: [][]sqltypes.Value{
-			{
-				sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
-			},
-		},
-	})
-	testUtils := newTestUtils()
-	config := testUtils.newQueryServiceConfig()
-	tsv := NewTabletServer(config)
-	dbconfigs := testUtils.newDBConfigs(db)
-	target := querypb.Target{TabletType: topodatapb.TabletType_MASTER}
-	err := tsv.StartService(target, dbconfigs, testUtils.newMysqld(&dbconfigs))
-	if err != nil {
-		t.Fatalf("StartService failed: %v", err)
-	}
-	defer tsv.StopService()
-	ctx := context.Background()
-	// add limit clause to make SplitQuery fail
-	if _, err := tsv.SplitQuery(ctx, nil, "select * from test_table where count > :count limit 1000", nil, "", 10); err == nil {
-		t.Fatalf("TabletServer.SplitQuery should fail")
-	}
-}
-
-// TODO(erez): Rename to TestTabletServerSplitQueryInvalidQuery once migration to SplitQuery
-// is done.
-func TestTabletServerSplitQueryV2InvalidQuery(t *testing.T) {
-	db := setUpTabletServerTest()
 	testUtils := newTestUtils()
 	config := testUtils.newQueryServiceConfig()
 	tsv := NewTabletServer(config)
@@ -1517,7 +1443,7 @@ func TestTabletServerSplitQueryV2InvalidQuery(t *testing.T) {
 	ctx := context.Background()
 	// SplitQuery should not support SQLs with a LIMIT clause:
 	sql := "select * from test_table where count > :count limit 10"
-	_, err = tsv.SplitQueryV2(
+	_, err = tsv.SplitQuery(
 		ctx,
 		&querypb.Target{TabletType: topodatapb.TabletType_RDONLY},
 		sql,
@@ -1531,55 +1457,7 @@ func TestTabletServerSplitQueryV2InvalidQuery(t *testing.T) {
 	}
 }
 
-func TestTabletServerSplitQueryInvalidMinMax(t *testing.T) {
-	// Tests that split query returns an error when the query is invalid.
-	db := setUpTabletServerTest()
-	testUtils := newTestUtils()
-	pkMinMaxQuery := "SELECT MIN(pk), MAX(pk) FROM test_table"
-	pkMinMaxQueryResp := &sqltypes.Result{
-		Fields: []*querypb.Field{
-			{Name: "pk", Type: sqltypes.Int32},
-		},
-		RowsAffected: 1,
-		Rows: [][]sqltypes.Value{
-			// this make SplitQueryFail
-			{
-				sqltypes.MakeString([]byte("invalid")),
-				sqltypes.MakeString([]byte("invalid")),
-			},
-		},
-	}
-	db.AddQuery("SELECT pk FROM test_table LIMIT 0", &sqltypes.Result{
-		Fields: []*querypb.Field{
-			{Name: "pk", Type: sqltypes.Int32},
-		},
-		RowsAffected: 1,
-		Rows: [][]sqltypes.Value{
-			{
-				sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
-			},
-		},
-	})
-	db.AddQuery(pkMinMaxQuery, pkMinMaxQueryResp)
-
-	config := testUtils.newQueryServiceConfig()
-	tsv := NewTabletServer(config)
-	dbconfigs := testUtils.newDBConfigs(db)
-	target := querypb.Target{TabletType: topodatapb.TabletType_MASTER}
-	err := tsv.StartService(target, dbconfigs, testUtils.newMysqld(&dbconfigs))
-	if err != nil {
-		t.Fatalf("StartService failed: %v", err)
-	}
-	defer tsv.StopService()
-	ctx := context.Background()
-	if _, err := tsv.SplitQuery(ctx, nil, "select * from test_table where count > :count", nil, "", 10); err == nil {
-		t.Fatalf("TabletServer.SplitQuery should fail")
-	}
-}
-
-// TODO(erez): Rename to TestTabletServerSplitQueryInvalidParams once migration to SplitQuery
-// is done.
-func TestTabletServerSplitQueryV2InvalidParams(t *testing.T) {
+func TestTabletServerSplitQueryInvalidParams(t *testing.T) {
 	// Tests that SplitQuery returns an error when both numRowsPerQueryPart and splitCount are given.
 	db := setUpTabletServerTest()
 	testUtils := newTestUtils()
@@ -1594,7 +1472,7 @@ func TestTabletServerSplitQueryV2InvalidParams(t *testing.T) {
 	defer tsv.StopService()
 	ctx := context.Background()
 	sql := "select * from test_table where count > :count"
-	_, err = tsv.SplitQueryV2(
+	_, err = tsv.SplitQuery(
 		ctx,
 		&querypb.Target{TabletType: topodatapb.TabletType_RDONLY},
 		sql,
@@ -1805,6 +1683,7 @@ func getSupportedQueries() map[string]*sqltypes.Result {
 		sqlTurnoffBinlog:                                     {},
 		fmt.Sprintf(sqlCreateSidecarDB, "_vt"):               {},
 		fmt.Sprintf(sqlCreateTableRedoLogTransaction, "_vt"): {},
+		fmt.Sprintf(sqlAlterTableRedoLogTransaction, "_vt"):  {},
 		fmt.Sprintf(sqlCreateTableRedoLogStatement, "_vt"):   {},
 		fmt.Sprintf(sqlCreateTableTransaction, "_vt"):        {},
 		fmt.Sprintf(sqlCreateTableParticipant, "_vt"):        {},
@@ -1921,6 +1800,7 @@ func getSupportedQueries() map[string]*sqltypes.Result {
 				},
 			},
 		},
+		fmt.Sprintf(sqlReadAllRedo, "_vt", "_vt"): {},
 	}
 }
 
