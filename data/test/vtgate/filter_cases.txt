@@ -176,7 +176,7 @@
       "Sharded": true
     },
     "Query": "select user_extra.id from user join user_extra on user.id = user_extra.user_id where user.id = 5",
-    "FieldQuery": "select user_extra.id from user join user_extra where 1 != 1",
+    "FieldQuery": "select user_extra.id from user join user_extra on user.id = user_extra.user_id where 1 != 1",
     "Vindex": "user_index",
     "Values": 5
   }
@@ -193,7 +193,7 @@
       "Sharded": true
     },
     "Query": "select user_extra.id from user join user_extra on user.id = user_extra.user_id where user_extra.user_id = 5",
-    "FieldQuery": "select user_extra.id from user join user_extra where 1 != 1",
+    "FieldQuery": "select user_extra.id from user join user_extra on user.id = user_extra.user_id where 1 != 1",
     "Vindex": "user_index",
     "Values": 5
   }
@@ -210,7 +210,7 @@
       "Sharded": true
     },
     "Query": "select user_extra.id from user left join user_extra on user.id = user_extra.user_id where user.id = 5",
-    "FieldQuery": "select user_extra.id from user left join user_extra on 1 != 1 where 1 != 1",
+    "FieldQuery": "select user_extra.id from user left join user_extra on user.id = user_extra.user_id where 1 != 1",
     "Vindex": "user_index",
     "Values": 5
   }
@@ -227,7 +227,7 @@
       "Sharded": true
     },
     "Query": "select user_extra.id from user left join user_extra on user.id = user_extra.user_id where user_extra.user_id = 5",
-    "FieldQuery": "select user_extra.id from user left join user_extra on 1 != 1 where 1 != 1"
+    "FieldQuery": "select user_extra.id from user left join user_extra on user.id = user_extra.user_id where 1 != 1"
   }
 }
 
@@ -470,9 +470,9 @@
 }
 
 # Unsharded route
-"select main1.id from user join main1 where main1.id = user.id"
+"select unsharded.id from user join unsharded where unsharded.id = user.id"
 {
-  "Original": "select main1.id from user join main1 where main1.id = user.id",
+  "Original": "select unsharded.id from user join unsharded where unsharded.id = user.id",
   "Instructions": {
     "Opcode": "Join",
     "Left": {
@@ -490,8 +490,8 @@
         "Name": "main",
         "Sharded": false
       },
-      "Query": "select main1.id from main1 where main1.id = :user_id",
-      "FieldQuery": "select main1.id from main1 where 1 != 1",
+      "Query": "select unsharded.id from unsharded where unsharded.id = :user_id",
+      "FieldQuery": "select unsharded.id from unsharded where 1 != 1",
       "JoinVars": {
         "user_id": {}
       }
@@ -685,6 +685,10 @@
   }
 }
 
+# unresolved symbol in inner subquery.
+"select id from user where id = :a and user.col in (select user_extra.col from user_extra where user_extra.user_id = :a and foo.id = 1)"
+"symbol foo.id not found"
+
 # outer and inner subquery route by same outermost column value
 "select id2 from user uu where id in (select id from user where id = uu.id and user.col in (select user_extra.col from user_extra where user_extra.user_id = uu.id))"
 {
@@ -711,7 +715,7 @@
       "Sharded": true
     },
     "Query": "select user_extra.Id from user join user_extra on user.iD = user_extra.User_Id where user.Id = 5",
-    "FieldQuery": "select user_extra.Id from user join user_extra where 1 != 1",
+    "FieldQuery": "select user_extra.Id from user join user_extra on user.iD = user_extra.User_Id where 1 != 1",
     "Vindex": "user_index",
     "Values": 5
   }

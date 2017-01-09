@@ -2,6 +2,7 @@
 "select * from a union select * from b"
 {
   "PlanID": "PASS_SELECT",
+  "TableName": "",
   "FieldQuery": "select * from a where 1 != 1 union select * from b where 1 != 1",
   "FullQuery": "select * from a union select * from b"
 }
@@ -20,7 +21,7 @@
 {
   "PlanID": "PASS_SELECT",
   "TableName": "a",
-  "FieldQuery": "select * from a where 1 != 1",
+  "FieldQuery": "select * from a where 1 != 1 group by b",
   "FullQuery": "select * from a group by b limit :#maxLimit"
 }
 
@@ -46,6 +47,7 @@
 "select * from a.b"
 {
   "PlanID": "PASS_SELECT",
+  "TableName": "",
   "FieldQuery": "select * from a.b where 1 != 1",
   "FullQuery": "select * from a.b limit :#maxLimit"
 }
@@ -54,6 +56,7 @@
 "select * from a,b"
 {
   "PlanID": "PASS_SELECT",
+  "TableName": "",
   "FieldQuery": "select * from a, b where 1 != 1",
   "FullQuery": "select * from a, b limit :#maxLimit"
 }
@@ -62,6 +65,7 @@
 "select * from a join b"
 {
   "PlanID": "PASS_SELECT",
+  "TableName": "",
   "FieldQuery": "select * from a join b where 1 != 1",
   "FullQuery": "select * from a join b limit :#maxLimit"
 }
@@ -70,7 +74,8 @@
 "select * from a right join b on c = d"
 {
   "PlanID": "PASS_SELECT",
-  "FieldQuery": "select * from a right join b on 1 != 1 where 1 != 1",
+  "TableName": "",
+  "FieldQuery": "select * from a right join b on c = d where 1 != 1",
   "FullQuery": "select * from a right join b on c = d limit :#maxLimit"
 }
 
@@ -78,6 +83,7 @@
 "select * from (b)"
 {
   "PlanID": "PASS_SELECT",
+  "TableName": "",
   "FieldQuery": "select * from (b) where 1 != 1",
   "FullQuery": "select * from (b) limit :#maxLimit"
 }
@@ -149,12 +155,9 @@
 {
   "PlanID": "PASS_DML",
   "Reason": "TABLE",
+  "TableName": "",
   "FullQuery": "insert into b.a(eid, id) values (1, :a)"
 }
-
-# insert sub-select
-"insert into a (eid, id) values (select * from b)"
-"row subquery not supported for inserts"
 
 # insert with bind value
 "insert into a (eid, id) values (1, :a)"
@@ -226,6 +229,15 @@
   "Reason": "COMPLEX_EXPR",
   "TableName": "a",
   "FullQuery": "insert into a(eid, id) values (1 + 1, 2)"
+}
+
+# complex
+"insert into a (eid, id) values (0x04, 2)"
+{
+  "PlanID": "PASS_DML",
+  "Reason": "COMPLEX_EXPR",
+  "TableName": "a",
+  "FullQuery": "insert into a(eid, id) values (0x04, 2)"
 }
 
 # no index
@@ -338,6 +350,7 @@
 {
   "PlanID": "PASS_DML",
   "Reason": "TABLE",
+  "TableName": "",
   "FullQuery": "update b.a set name = 'foo' where eid = 1 and id = 1"
 }
 
@@ -353,8 +366,8 @@
 }
 
 # type mismatch
-"update b set eid=1.2"
-"type mismatch: strconv.ParseUint: parsing "1.2": invalid syntax"
+"update b set eid=18446744073709551616"
+"type mismatch: strconv.ParseUint: parsing "18446744073709551616": value out of range"
 
 # complex pk change
 "update b set eid=foo()"
@@ -499,6 +512,7 @@
 {
   "PlanID": "PASS_DML",
   "Reason": "TABLE",
+  "TableName": "",
   "FullQuery": "delete from b.a where eid = 1 and id = 1"
 }
 
@@ -621,11 +635,28 @@
   "Subquery":"select eid, id from a where eid = 1 and eid = 2 limit :#maxLimit for update"
 }
 
-# sequence
+# single value sequence
 "select next value from seq"
 {
   "PlanID": "NEXTVAL",
-  "TableName": "seq"
+  "TableName": "seq",
+  "PKValues":[1]
+}
+
+# sequence with number
+"select next 10 values from seq"
+{
+  "PlanID": "NEXTVAL",
+  "TableName": "seq",
+  "PKValues":[10]
+}
+
+# sequence with bindvar
+"select next :a values from seq"
+{
+  "PlanID": "NEXTVAL",
+  "TableName": "seq",
+  "PKValues":[":a"]
 }
 
 # nextval on non-sequence table
@@ -640,6 +671,7 @@
 "set  a=1"
 {
   "PlanID": "SET",
+  "TableName": "",
   "FullQuery": "set a = 1"
 }
 
@@ -647,6 +679,7 @@
 "set  a=1.2"
 {
   "PlanID": "SET",
+  "TableName": "",
   "FullQuery": "set a = 1.2"
 }
 
@@ -654,6 +687,7 @@
 "set a='b'"
 {
   "PlanID": "SET",
+  "TableName": "",
   "FullQuery": "set a = 'b'"
 }
 
@@ -661,13 +695,15 @@
 "set a=1, b=2"
 {
   "PlanID": "SET",
+  "TableName": "",
   "FullQuery": "set a = 1, b = 2"
 }
 
 # create
 "create table a(a int, b varchar(8))"
 {
-  "PlanID": "DDL"
+  "PlanID": "DDL",
+  "TableName": ""
 }
 
 # alter
@@ -708,19 +744,22 @@
 # show
 "show a"
 {
-  "PlanID": "OTHER"
+  "PlanID": "OTHER",
+  "TableName": ""
 }
 
 # describe
 "describe a"
 {
-  "PlanID": "OTHER"
+  "PlanID": "OTHER",
+  "TableName": ""
 }
 
 # explain
 "explain a"
 {
-  "PlanID": "OTHER"
+  "PlanID": "OTHER",
+  "TableName": ""
 }
 
 # table not found select

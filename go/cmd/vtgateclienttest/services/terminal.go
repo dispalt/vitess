@@ -52,6 +52,15 @@ func (c *terminalClient) ExecuteEntityIds(ctx context.Context, sql string, bindV
 	return nil, errTerminal
 }
 
+func (c *terminalClient) ExecuteBatch(ctx context.Context, sqlList []string, bindVariablesList []map[string]interface{}, keyspace string, tabletType topodatapb.TabletType, asTransaction bool, session *vtgatepb.Session, options *querypb.ExecuteOptions) ([]sqltypes.QueryResponse, error) {
+	if len(sqlList) == 1 {
+		if sqlList[0] == "quit://" {
+			log.Fatal("Received quit:// query. Going down.")
+		}
+	}
+	return nil, errTerminal
+}
+
 func (c *terminalClient) ExecuteBatchShards(ctx context.Context, queries []*vtgatepb.BoundShardQuery, tabletType topodatapb.TabletType, asTransaction bool, session *vtgatepb.Session, options *querypb.ExecuteOptions) ([]sqltypes.Result, error) {
 	return nil, errTerminal
 }
@@ -76,15 +85,19 @@ func (c *terminalClient) StreamExecuteKeyRanges(ctx context.Context, sql string,
 	return errTerminal
 }
 
-func (c *terminalClient) Begin(ctx context.Context) (*vtgatepb.Session, error) {
+func (c *terminalClient) Begin(ctx context.Context, singledb bool) (*vtgatepb.Session, error) {
 	return nil, errTerminal
 }
 
-func (c *terminalClient) Commit(ctx context.Context, session *vtgatepb.Session) error {
+func (c *terminalClient) Commit(ctx context.Context, twopc bool, session *vtgatepb.Session) error {
 	return errTerminal
 }
 
 func (c *terminalClient) Rollback(ctx context.Context, session *vtgatepb.Session) error {
+	return errTerminal
+}
+
+func (c *terminalClient) ResolveTransaction(ctx context.Context, dtid string) error {
 	return errTerminal
 }
 

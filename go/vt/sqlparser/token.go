@@ -69,10 +69,10 @@ var keywords = map[string]int{
 	"cross":               CROSS,
 	"current_date":        UNUSED,
 	"current_time":        UNUSED,
-	"current_timestamp":   UNUSED,
+	"current_timestamp":   CURRENT_TIMESTAMP,
 	"current_user":        UNUSED,
 	"cursor":              UNUSED,
-	"database":            UNUSED,
+	"database":            DATABASE,
 	"databases":           UNUSED,
 	"day_hour":            UNUSED,
 	"day_microsecond":     UNUSED,
@@ -172,7 +172,7 @@ var keywords = map[string]int{
 	"middleint":           UNUSED,
 	"minute_microsecond":  UNUSED,
 	"minute_second":       UNUSED,
-	"mod":                 UNUSED,
+	"mod":                 MOD,
 	"modifies":            UNUSED,
 	"natural":             NATURAL,
 	"next":                NEXT,
@@ -285,7 +285,7 @@ func (tkn *Tokenizer) Lex(lval *yySymType) int {
 		typ, val = tkn.Scan()
 	}
 	switch typ {
-	case ID, STRING, HEX, NUMBER, VALUE_ARG, LIST_ARG, COMMENT:
+	case ID, STRING, HEX, INTEGRAL, FLOAT, HEXNUM, VALUE_ARG, LIST_ARG, COMMENT:
 		lval.bytes = val
 	}
 	tkn.lastToken = val
@@ -357,9 +357,17 @@ func (tkn *Tokenizer) Scan() (int, []byte) {
 				return int(ch), nil
 			}
 		case '-':
-			if tkn.lastChar == '-' {
+			switch tkn.lastChar {
+			case '-':
 				tkn.next()
 				return tkn.scanCommentType1("--")
+			case '>':
+				tkn.next()
+				if tkn.lastChar == '>' {
+					tkn.next()
+					return JSON_UNQUOTE_EXTRACT_OP, nil
+				}
+				return JSON_EXTRACT_OP, nil
 			}
 			return int(ch), nil
 		case '<':
@@ -451,17 +459,32 @@ func (tkn *Tokenizer) scanHex() (int, []byte) {
 
 func (tkn *Tokenizer) scanLiteralIdentifier() (int, []byte) {
 	buffer := &bytes.Buffer{}
-	buffer.WriteByte(byte(tkn.lastChar))
-	if !isLetter(tkn.lastChar) {
+	backTickSeen := false
+	for {
+		if backTickSeen {
+			if tkn.lastChar != '`' {
+				break
+			}
+			backTickSeen = false
+			buffer.WriteByte('`')
+			tkn.next()
+			continue
+		}
+		// The previous char was not a backtick.
+		switch tkn.lastChar {
+		case '`':
+			backTickSeen = true
+		case eofChar:
+			// Premature EOF.
+			return LEX_ERROR, buffer.Bytes()
+		default:
+			buffer.WriteByte(byte(tkn.lastChar))
+		}
+		tkn.next()
+	}
+	if buffer.Len() == 0 {
 		return LEX_ERROR, buffer.Bytes()
 	}
-	for tkn.next(); isLetter(tkn.lastChar) || isDigit(tkn.lastChar); tkn.next() {
-		buffer.WriteByte(byte(tkn.lastChar))
-	}
-	if tkn.lastChar != '`' {
-		return LEX_ERROR, buffer.Bytes()
-	}
-	tkn.next()
 	return ID, buffer.Bytes()
 }
 
@@ -492,8 +515,10 @@ func (tkn *Tokenizer) scanMantissa(base int, buffer *bytes.Buffer) {
 }
 
 func (tkn *Tokenizer) scanNumber(seenDecimalPoint bool) (int, []byte) {
+	token := INTEGRAL
 	buffer := &bytes.Buffer{}
 	if seenDecimalPoint {
+		token = FLOAT
 		buffer.WriteByte('.')
 		tkn.scanMantissa(10, buffer)
 		goto exponent
@@ -503,6 +528,7 @@ func (tkn *Tokenizer) scanNumber(seenDecimalPoint bool) (int, []byte) {
 	if tkn.lastChar == '0' {
 		tkn.consumeNext(buffer)
 		if tkn.lastChar == 'x' || tkn.lastChar == 'X' {
+			token = HEXNUM
 			tkn.consumeNext(buffer)
 			tkn.scanMantissa(16, buffer)
 			goto exit
@@ -512,12 +538,14 @@ func (tkn *Tokenizer) scanNumber(seenDecimalPoint bool) (int, []byte) {
 	tkn.scanMantissa(10, buffer)
 
 	if tkn.lastChar == '.' {
+		token = FLOAT
 		tkn.consumeNext(buffer)
 		tkn.scanMantissa(10, buffer)
 	}
 
 exponent:
 	if tkn.lastChar == 'e' || tkn.lastChar == 'E' {
+		token = FLOAT
 		tkn.consumeNext(buffer)
 		if tkn.lastChar == '+' || tkn.lastChar == '-' {
 			tkn.consumeNext(buffer)
@@ -531,7 +559,7 @@ exit:
 		return LEX_ERROR, buffer.Bytes()
 	}
 
-	return NUMBER, buffer.Bytes()
+	return token, buffer.Bytes()
 }
 
 func (tkn *Tokenizer) scanString(delim uint16, typ int) (int, []byte) {

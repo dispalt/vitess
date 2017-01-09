@@ -24,11 +24,16 @@ type TrackedBuffer struct {
 
 // NewTrackedBuffer creates a new TrackedBuffer.
 func NewTrackedBuffer(nodeFormatter func(buf *TrackedBuffer, node SQLNode)) *TrackedBuffer {
-	buf := &TrackedBuffer{
-		Buffer:        bytes.NewBuffer(make([]byte, 0, 128)),
-		bindLocations: make([]bindLocation, 0, 4),
+	return &TrackedBuffer{
+		Buffer:        new(bytes.Buffer),
 		nodeFormatter: nodeFormatter,
 	}
+}
+
+// WriteNode function, initiates the writing of a single SQLNode tree by passing
+// through to Myprintf with a default format string
+func (buf *TrackedBuffer) WriteNode(node SQLNode) *TrackedBuffer {
+	buf.Myprintf("%v", node)
 	return buf
 }
 

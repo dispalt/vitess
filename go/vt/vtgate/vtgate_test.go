@@ -35,7 +35,7 @@ import (
 var hcVTGateTest *discovery.FakeHealthCheck
 
 var executeOptions = &querypb.ExecuteOptions{
-	ExcludeFieldNames: true,
+	IncludedFields: querypb.ExecuteOptions_TYPE_ONLY,
 }
 
 func init() {
@@ -48,7 +48,149 @@ func init() {
 }
 `
 	hcVTGateTest = discovery.NewFakeHealthCheck()
+	*transactionMode = "multi"
 	Init(context.Background(), hcVTGateTest, topo.Server{}, new(sandboxTopo), "aa", 10, nil)
+}
+
+func TestVTGateBegin(t *testing.T) {
+	save := rpcVTGate.transactionMode
+	defer func() {
+		rpcVTGate.transactionMode = save
+	}()
+
+	rpcVTGate.transactionMode = TxSingle
+	got, err := rpcVTGate.Begin(context.Background(), true)
+	if err != nil {
+		t.Error(err)
+	}
+	wantSession := &vtgatepb.Session{
+		InTransaction: true,
+		SingleDb:      true,
+	}
+	if !reflect.DeepEqual(got, wantSession) {
+		t.Errorf("Begin(single): %v, want %v", got, wantSession)
+	}
+
+	_, err = rpcVTGate.Begin(context.Background(), false)
+	wantErr := "multi-db transaction disallowed"
+	if err == nil || err.Error() != wantErr {
+		t.Errorf("Begin(multi): %v, want %s", err, wantErr)
+	}
+
+	rpcVTGate.transactionMode = TxMulti
+	got, err = rpcVTGate.Begin(context.Background(), true)
+	if err != nil {
+		t.Error(err)
+	}
+	wantSession = &vtgatepb.Session{
+		InTransaction: true,
+		SingleDb:      true,
+	}
+	if !reflect.DeepEqual(got, wantSession) {
+		t.Errorf("Begin(single): %v, want %v", got, wantSession)
+	}
+
+	got, err = rpcVTGate.Begin(context.Background(), false)
+	if err != nil {
+		t.Error(err)
+	}
+	wantSession = &vtgatepb.Session{
+		InTransaction: true,
+	}
+	if !reflect.DeepEqual(got, wantSession) {
+		t.Errorf("Begin(single): %v, want %v", got, wantSession)
+	}
+
+	rpcVTGate.transactionMode = TxTwoPC
+	got, err = rpcVTGate.Begin(context.Background(), true)
+	if err != nil {
+		t.Error(err)
+	}
+	wantSession = &vtgatepb.Session{
+		InTransaction: true,
+		SingleDb:      true,
+	}
+	if !reflect.DeepEqual(got, wantSession) {
+		t.Errorf("Begin(single): %v, want %v", got, wantSession)
+	}
+
+	got, err = rpcVTGate.Begin(context.Background(), false)
+	if err != nil {
+		t.Error(err)
+	}
+	wantSession = &vtgatepb.Session{
+		InTransaction: true,
+	}
+	if !reflect.DeepEqual(got, wantSession) {
+		t.Errorf("Begin(single): %v, want %v", got, wantSession)
+	}
+}
+
+func TestVTGateCommit(t *testing.T) {
+	save := rpcVTGate.transactionMode
+	defer func() {
+		rpcVTGate.transactionMode = save
+	}()
+
+	session := &vtgatepb.Session{
+		InTransaction: true,
+	}
+
+	rpcVTGate.transactionMode = TxSingle
+	err := rpcVTGate.Commit(context.Background(), true, session)
+	wantErr := "2pc transaction disallowed"
+	if err == nil || err.Error() != wantErr {
+		t.Errorf("Begin(multi): %v, want %s", err, wantErr)
+	}
+
+	session = &vtgatepb.Session{
+		InTransaction: true,
+	}
+	err = rpcVTGate.Commit(context.Background(), false, session)
+	if err != nil {
+		t.Error(err)
+	}
+
+	rpcVTGate.transactionMode = TxMulti
+	session = &vtgatepb.Session{
+		InTransaction: true,
+	}
+	err = rpcVTGate.Commit(context.Background(), true, session)
+	if err == nil || err.Error() != wantErr {
+		t.Errorf("Begin(multi): %v, want %s", err, wantErr)
+	}
+
+	session = &vtgatepb.Session{
+		InTransaction: true,
+	}
+	err = rpcVTGate.Commit(context.Background(), false, session)
+	if err != nil {
+		t.Error(err)
+	}
+
+	rpcVTGate.transactionMode = TxTwoPC
+	session = &vtgatepb.Session{
+		InTransaction: true,
+	}
+	err = rpcVTGate.Commit(context.Background(), true, session)
+	if err != nil {
+		t.Error(err)
+	}
+
+	session = &vtgatepb.Session{
+		InTransaction: true,
+	}
+	err = rpcVTGate.Commit(context.Background(), false, session)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestVTGateRollbackNil(t *testing.T) {
+	err := rpcVTGate.Rollback(context.Background(), nil)
+	if err != nil {
+		t.Error(err)
+	}
 }
 
 func TestVTGateExecute(t *testing.T) {
@@ -73,7 +215,7 @@ func TestVTGateExecute(t *testing.T) {
 		t.Errorf("got ExecuteOptions \n%+v, want \n%+v", sbc.Options[0], executeOptions)
 	}
 
-	session, err := rpcVTGate.Begin(context.Background())
+	session, err := rpcVTGate.Begin(context.Background(), false)
 	if !session.InTransaction {
 		t.Errorf("want true, got false")
 	}
@@ -100,12 +242,12 @@ func TestVTGateExecute(t *testing.T) {
 		t.Errorf("want \n%+v, got \n%+v", wantSession, session)
 	}
 
-	rpcVTGate.Commit(context.Background(), session)
+	rpcVTGate.Commit(context.Background(), false, session)
 	if commitCount := sbc.CommitCount.Get(); commitCount != 1 {
 		t.Errorf("want 1, got %d", commitCount)
 	}
 
-	session, err = rpcVTGate.Begin(context.Background())
+	session, err = rpcVTGate.Begin(context.Background(), false)
 	rpcVTGate.Execute(context.Background(),
 		"select id from t1",
 		nil,
@@ -177,7 +319,7 @@ func TestVTGateExecuteShards(t *testing.T) {
 		t.Errorf("got ExecuteOptions \n%+v, want \n%+v", sbc.Options[0], executeOptions)
 	}
 
-	session, err := rpcVTGate.Begin(context.Background())
+	session, err := rpcVTGate.Begin(context.Background(), false)
 	if !session.InTransaction {
 		t.Errorf("want true, got false")
 	}
@@ -205,12 +347,12 @@ func TestVTGateExecuteShards(t *testing.T) {
 		t.Errorf("want \n%+v, got \n%+v", wantSession, session)
 	}
 
-	rpcVTGate.Commit(context.Background(), session)
+	rpcVTGate.Commit(context.Background(), false, session)
 	if commitCount := sbc.CommitCount.Get(); commitCount != 1 {
 		t.Errorf("want 1, got %d", commitCount)
 	}
 
-	session, err = rpcVTGate.Begin(context.Background())
+	session, err = rpcVTGate.Begin(context.Background(), false)
 	rpcVTGate.ExecuteShards(context.Background(),
 		"query",
 		nil,
@@ -257,7 +399,7 @@ func TestVTGateExecuteKeyspaceIds(t *testing.T) {
 		t.Errorf("got ExecuteOptions \n%+v, want \n%+v", sbc1.Options[0], executeOptions)
 	}
 	// Test for successful execution in transaction
-	session, err := rpcVTGate.Begin(context.Background())
+	session, err := rpcVTGate.Begin(context.Background(), false)
 	if !session.InTransaction {
 		t.Errorf("want true, got false")
 	}
@@ -284,7 +426,7 @@ func TestVTGateExecuteKeyspaceIds(t *testing.T) {
 	if !reflect.DeepEqual(wantSession, session) {
 		t.Errorf("want \n%+v, got \n%+v", wantSession, session)
 	}
-	rpcVTGate.Commit(context.Background(), session)
+	rpcVTGate.Commit(context.Background(), false, session)
 	if commitCount := sbc1.CommitCount.Get(); commitCount != 1 {
 		t.Errorf("want 1, got %d", commitCount)
 	}
@@ -337,7 +479,7 @@ func TestVTGateExecuteKeyRanges(t *testing.T) {
 		t.Errorf("got ExecuteOptions \n%+v, want \n%+v", sbc1.Options[0], executeOptions)
 	}
 	// Test for successful execution in transaction
-	session, err := rpcVTGate.Begin(context.Background())
+	session, err := rpcVTGate.Begin(context.Background(), false)
 	if !session.InTransaction {
 		t.Errorf("want true, got false")
 	}
@@ -367,7 +509,7 @@ func TestVTGateExecuteKeyRanges(t *testing.T) {
 	if !reflect.DeepEqual(wantSession, session) {
 		t.Errorf("want \n%+v, got \n%+v", wantSession, session)
 	}
-	rpcVTGate.Commit(context.Background(), session)
+	rpcVTGate.Commit(context.Background(), false, session)
 	if commitCount := sbc1.CommitCount.Get(); commitCount != 1 {
 		t.Errorf("want 1, got %v", commitCount)
 	}
@@ -426,7 +568,7 @@ func TestVTGateExecuteEntityIds(t *testing.T) {
 		t.Errorf("got ExecuteOptions \n%+v, want \n%+v", sbc1.Options[0], executeOptions)
 	}
 	// Test for successful execution in transaction
-	session, err := rpcVTGate.Begin(context.Background())
+	session, err := rpcVTGate.Begin(context.Background(), false)
 	if !session.InTransaction {
 		t.Errorf("want true, got false")
 	}
@@ -460,7 +602,7 @@ func TestVTGateExecuteEntityIds(t *testing.T) {
 	if !reflect.DeepEqual(wantSession, session) {
 		t.Errorf("want \n%+v, got \n%+v", wantSession, session)
 	}
-	rpcVTGate.Commit(context.Background(), session)
+	rpcVTGate.Commit(context.Background(), false, session)
 	if commitCount := sbc1.CommitCount.Get(); commitCount != 1 {
 		t.Errorf("want 1, got %d", commitCount)
 	}
@@ -535,7 +677,7 @@ func TestVTGateExecuteBatchShards(t *testing.T) {
 		t.Errorf("got ExecuteOptions \n%+v, want \n%+v", sbc1.Options[0], executeOptions)
 	}
 
-	session, err := rpcVTGate.Begin(context.Background())
+	session, err := rpcVTGate.Begin(context.Background(), false)
 	rpcVTGate.ExecuteBatchShards(context.Background(),
 		[]*vtgatepb.BoundShardQuery{{
 			Query: &querypb.BoundQuery{
@@ -604,7 +746,7 @@ func TestVTGateExecuteBatchKeyspaceIds(t *testing.T) {
 		t.Errorf("got ExecuteOptions \n%+v, want \n%+v", sbc1.Options[0], executeOptions)
 	}
 
-	session, err := rpcVTGate.Begin(context.Background())
+	session, err := rpcVTGate.Begin(context.Background(), false)
 	rpcVTGate.ExecuteBatchKeyspaceIds(context.Background(),
 		[]*vtgatepb.BoundKeyspaceIdQuery{{
 			Query: &querypb.BoundQuery{
@@ -1698,7 +1840,7 @@ func testErrorPropagation(t *testing.T, sbcs []*sandboxconn.SandboxConn, before 
 			TransactionId: 1,
 		}},
 	}
-	err = rpcVTGate.Commit(context.Background(), session)
+	err = rpcVTGate.Commit(context.Background(), false, session)
 	if err == nil {
 		t.Errorf("error %v not propagated for Commit", expected)
 	} else {
@@ -1847,7 +1989,7 @@ func TestErrorIssuesRollback(t *testing.T) {
 	// Start a transaction, send one statement.
 	// Simulate an error that should trigger a rollback:
 	// vtrpcpb.ErrorCode_NOT_IN_TX case.
-	session, err := rpcVTGate.Begin(context.Background())
+	session, err := rpcVTGate.Begin(context.Background(), false)
 	if err != nil {
 		t.Fatalf("cannot start a transaction: %v", err)
 	}
@@ -1886,7 +2028,7 @@ func TestErrorIssuesRollback(t *testing.T) {
 	// Start a transaction, send one statement.
 	// Simulate an error that should trigger a rollback:
 	// vtrpcpb.ErrorCode_RESOURCE_EXHAUSTED case.
-	session, err = rpcVTGate.Begin(context.Background())
+	session, err = rpcVTGate.Begin(context.Background(), false)
 	if err != nil {
 		t.Fatalf("cannot start a transaction: %v", err)
 	}
@@ -1925,7 +2067,7 @@ func TestErrorIssuesRollback(t *testing.T) {
 	// Start a transaction, send one statement.
 	// Simulate an error that should *not* trigger a rollback:
 	// vtrpcpb.ErrorCode_INTEGRITY_ERROR case.
-	session, err = rpcVTGate.Begin(context.Background())
+	session, err = rpcVTGate.Begin(context.Background(), false)
 	if err != nil {
 		t.Fatalf("cannot start a transaction: %v", err)
 	}

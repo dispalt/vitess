@@ -36,10 +36,10 @@
 
     <!-- metadata -->
     <meta name="og:title" content="Vitess / Vitess Roadmap"/>
-    <meta name="og:image" content="/images/vitess_logomark_cropped.svg"/>
+    <meta name="og:image" content="/images/vitess_logo_with_border.svg"/>
     <meta name="og:description" content="Vitess is a database clustering system for horizontal scaling of MySQL."/>
 
-    <link rel="icon" href="/images/vitess_icon.png" type="image/png">
+    <link rel="icon" href="/images/vitess_logo_icon_size.png" type="image/png">
 
     
     <script>
@@ -69,7 +69,7 @@
         <span class="icon-bar"></span>
       </button>
       <a class="navbar-brand" href="/">
-        <img class="logo" src="/images/vitess_logomark_cropped.svg" alt="Vitess">
+        <img class="logo" src="/images/vitess_logo_with_border.svg" alt="Vitess">
       </a>
     </div>
 
@@ -113,7 +113,7 @@
             <li><a href="/user-guide/reparenting.html">Reparenting</a></li>
             <li style="padding-bottom: 0"><a href="/user-guide/schema-management.html">Schema Management</a></li>
               <ul style="display: block">
-                <li style="padding-bottom: 0"><a href="/user-guide/pivot-schema-changes.html">Pivot Schema Changes (Tutorial)</a></li>
+                <li style="padding-bottom: 0"><a href="/user-guide/schema-swap.html">Schema Swap (Tutorial)</a></li>
               </ul>
             <li style="padding-bottom: 0"><a href="/user-guide/sharding.html">Sharding</a>
               <ul style="display: block">
@@ -129,6 +129,7 @@
                 <li><a href="/user-guide/scalability-philosophy.html">Scalability Philosophy</a></li>
                 <li><a href="/user-guide/production-planning.html">Production Planning</a></li>
                 <li><a href="/user-guide/server-configuration.html">Server Configuration</a></li>
+                <li><a href="/user-guide/twopc.html">2PC Guide</a></li>
                 <li style="padding-bottom: 0"><a href="/user-guide/troubleshooting.html">Troubleshooting</a></li>
               </ul>
             </li>
@@ -215,7 +216,7 @@
             <li><a href="/user-guide/reparenting.html">Reparenting</a></li>
             <li style="padding-bottom: 0"><a href="/user-guide/schema-management.html">Schema Management</a></li>
               <ul style="display: block">
-                <li style="padding-bottom: 0"><a href="/user-guide/pivot-schema-changes.html">Pivot Schema Changes (Tutorial)</a></li>
+                <li style="padding-bottom: 0"><a href="/user-guide/schema-swap.html">Schema Swap (Tutorial)</a></li>
               </ul>
             <li style="padding-bottom: 0"><a href="/user-guide/sharding.html">Sharding</a>
               <ul style="display: block">
@@ -231,6 +232,7 @@
                 <li><a href="/user-guide/scalability-philosophy.html">Scalability Philosophy</a></li>
                 <li><a href="/user-guide/production-planning.html">Production Planning</a></li>
                 <li><a href="/user-guide/server-configuration.html">Server Configuration</a></li>
+                <li><a href="/user-guide/twopc.html">2PC Guide</a></li>
                 <li style="padding-bottom: 0"><a href="/user-guide/troubleshooting.html">Troubleshooting</a></li>
               </ul>
             </li>
@@ -324,17 +326,31 @@ following core features:</p>
 <li><p>Support for distributed transactions, using 2 phase commit.</p></li>
 <li><p>Resharding workflow improvements, to increase manageability of the process.</p></li>
 <li><p>Online schema swap, to apply complex schema changes without any downtime.</p></li>
-<li><p>New dynamic UI (vtctld), rewritten from scratch in angular2.</p></li>
+<li><p>New dynamic UI (vtctld), rewritten from scratch in Angular 2. We will still
+have the old UI in Vitess 2.1 as a fallback, but it will be removed in Vitess
+2.2.</p></li>
 <li><p>Update Stream functionality, for applications to subscribe to a change stream
 (for cache invalidation, for instance).</p></li>
 <li><p>Improved Map-Reduce support, for tables with non-uniform distributions.</p></li>
 <li><p>Increase large installation scalability with two-layer vtgate pools (l2vtgate,
 applicable to 100+ shard installations).</p></li>
 <li><p>Better Kubernetes support (Helm support, better scripts, ...).</p></li>
+<li><p>New implementations of the topology services for Zookeeper (<code class="prettyprint">zk2</code>) and etcd
+(<code class="prettyprint">etcd2</code>).  In Vitess 2.1 they will become the recommended implementations and
+the old <code class="prettyprint">zookeeper</code> and <code class="prettyprint">etcd</code> will be deprecated. In Vitess 2.2 only the new
+<code class="prettyprint">zk2</code> and <code class="prettyprint">etcd2</code> implementations will remain, so please migrate after upgrade
+to Vitess 2.1.</p></li>
+<li><p>Added support for <a href="http://consul.io">Consul</a> topology service client.</p></li>
+<li><p>Initial version of the Master Buffering feature. It allows for buffering
+master traffic while a failover is in progress, and trade downtime with
+extra latency.</p></li>
 </ul>
 
-<p>Our plan is to cut a 2.1.0-alpha.1 release very soon, and to update the
-documentation shortly thereafter.</p>
+<p>We already cut
+the
+<a href="https://github.com/youtube/vitess/releases/tag/v2.1.0-alpha.1">2.1.0-alpha.1 release</a>,
+and we are finalizing the last details at the moment. Release ETA is around
+beginning of 2017.</p>
 
 <h2 id="vitess-moving-forward">Vitess Moving Forward</h2>
 
@@ -359,6 +375,8 @@ instance).</p></li>
 <li><p>Support for MySQL 8.0.</p></li>
 <li><p>Additional Kubernetes integration.</p></li>
 <li><p>Include resharding workflows in the control panel UI (vtctld).</p></li>
+<li><p>Support vertical splits to an existing keyspace, so any table can be moved
+around to any keyspace. Only for unsharded keyspaces, at first.</p></li>
 <li><p>Out-of-the-box integration with Promotheus for monitoring.</p></li>
 </ul>
 
@@ -394,7 +412,7 @@ InputSource).</p></li>
     
     <a href="https://groups.google.com/forum/#!forum/vitess" target="_blank">Contact: vitess@googlegroups.com</a>&nbsp;&nbsp;<b>·</b>&nbsp;&nbsp;
     <a href="https://groups.google.com/forum/#!forum/vitess-announce" target="_blank">Announcements</a>&nbsp;&nbsp;<b>·</b>&nbsp;&nbsp;
-    &#169; 2016 <a href="/">Vitess</a> powered by <a href="https://developers.google.com/open-source/">Google Inc</a>
+    &#169; 2017 <a href="/">Vitess</a> powered by <a href="https://developers.google.com/open-source/">Google Inc</a>
   </nav>
 </footer>
 

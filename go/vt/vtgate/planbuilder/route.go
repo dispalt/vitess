@@ -36,7 +36,7 @@ type route struct {
 	ERoute *engine.Route
 }
 
-func newRoute(from sqlparser.TableExprs, eroute *engine.Route, table *vindexes.Table, vschema VSchema, alias, astName sqlparser.TableIdent) *route {
+func newRoute(from sqlparser.TableExprs, eroute *engine.Route, table *vindexes.Table, vschema VSchema, alias *sqlparser.TableName, astName sqlparser.TableIdent) *route {
 	// We have some circular pointer references here:
 	// The route points to the symtab idicating
 	// the symtab that should be used to resolve symbols
@@ -113,6 +113,12 @@ func (rb *route) Join(rhs builder, ajoin *sqlparser.JoinTableExpr) (builder, err
 		return rb.merge(rRoute, ajoin)
 	}
 
+	// Both route are sharded routes. For ',' joins (ajoin==nil), don't
+	// analyze mergeability.
+	if ajoin == nil {
+		return newJoin(rb, rRoute, nil)
+	}
+
 	// Both route are sharded routes. Analyze join condition for merging.
 	for _, filter := range splitAndExpression(nil, ajoin.On) {
 		if rb.isSameRoute(rRoute, filter) {
@@ -137,16 +143,24 @@ func (rb *route) SetRHS() {
 
 // merge merges the two routes. The ON clause is also analyzed to
 // see if the primitive can be improved. The operation can fail if
-// the expression contains a non-pushable subquery.
+// the expression contains a non-pushable subquery. ajoin can be nil
+// if the join is on a ',' operator.
 func (rb *route) merge(rhs *route, ajoin *sqlparser.JoinTableExpr) (builder, error) {
-	rb.Select.From = sqlparser.TableExprs{ajoin}
-	if ajoin.Join == sqlparser.LeftJoinStr {
-		rhs.Symtab().SetRHS()
+	if ajoin == nil {
+		rb.Select.From = append(rb.Select.From, rhs.Select.From...)
+	} else {
+		rb.Select.From = sqlparser.TableExprs{ajoin}
+		if ajoin.Join == sqlparser.LeftJoinStr {
+			rhs.Symtab().SetRHS()
+		}
 	}
 	err := rb.Symtab().Merge(rhs.Symtab())
 	rhs.Redirect = rb
 	if err != nil {
 		return nil, err
+	}
+	if ajoin == nil {
+		return rb, nil
 	}
 	for _, filter := range splitAndExpression(nil, ajoin.On) {
 		// If VTGate evolves, this section should be rewritten
@@ -319,13 +333,16 @@ func (rb *route) PushSelect(expr *sqlparser.NonStarExpr, _ *route) (colsym *cols
 	if col, ok := expr.Expr.(*sqlparser.ColName); ok {
 		// If no alias was specified, then the base name
 		// of the column becomes the alias.
-		if colsym.Alias.Original() == "" {
+		if colsym.Alias.IsEmpty() {
 			colsym.Alias = col.Name
 		}
 		// We should always allow other parts of the query to reference
 		// the fully qualified name of the column.
 		if tab, ok := col.Metadata.(*tabsym); ok {
-			colsym.QualifiedName = sqlparser.NewColIdent(sqlparser.String(tab.Alias) + "." + col.Name.Original())
+			colsym.QualifiedName = &sqlparser.ColName{
+				Qualifier: tab.Alias,
+				Name:      col.Name,
+			}
 		}
 		colsym.Vindex = rb.Symtab().Vindex(col, rb, true)
 		colsym.Underlying = newColref(col)
@@ -352,10 +369,13 @@ func (rb *route) PushStar(expr *sqlparser.StarExpr) *colsym {
 	// If someone uses 'select *' and then uses table.col
 	// in the HAVING clause, then things won't match. But
 	// such cases are easy to correct in the application.
-	if expr.TableName == "" {
-		colsym.Alias = sqlparser.NewColIdent(sqlparser.String(expr))
+	if expr.TableName.IsEmpty() {
+		colsym.Alias = sqlparser.NewColIdent("*")
 	} else {
-		colsym.QualifiedName = sqlparser.NewColIdent(sqlparser.String(expr))
+		colsym.QualifiedName = &sqlparser.ColName{
+			Qualifier: expr.TableName,
+			Name:      sqlparser.NewColIdent("*"),
+		}
 	}
 	rb.Select.SelectExprs = append(rb.Select.SelectExprs, expr)
 	rb.Colsyms = append(rb.Colsyms, colsym)
@@ -384,6 +404,11 @@ func (rb *route) AddOrder(order *sqlparser.Order) error {
 // SetLimit adds a LIMIT clause to the route.
 func (rb *route) SetLimit(limit *sqlparser.Limit) {
 	rb.Select.Limit = limit
+}
+
+// PushOrderByNull updates the comments & 'for update' sections of the route.
+func (rb *route) PushOrderByNull() {
+	rb.Select.OrderBy = sqlparser.OrderBy{&sqlparser.Order{Expr: &sqlparser.NullVal{}}}
 }
 
 // PushMisc updates the comments & 'for update' sections of the route.
@@ -419,7 +444,7 @@ func (rb *route) Wireup(bldr builder, jt *jointab) error {
 			if len(node.SelectExprs) == 0 {
 				node.SelectExprs = sqlparser.SelectExprs([]sqlparser.SelectExpr{
 					&sqlparser.NonStarExpr{
-						Expr: sqlparser.NumVal([]byte{'1'}),
+						Expr: sqlparser.NewIntVal([]byte{'1'}),
 					},
 				})
 			}
@@ -494,17 +519,6 @@ func (rb *route) isLocal(col *sqlparser.ColName) bool {
 func (rb *route) generateFieldQuery(sel *sqlparser.Select, jt *jointab) string {
 	formatter := func(buf *sqlparser.TrackedBuffer, node sqlparser.SQLNode) {
 		switch node := node.(type) {
-		case *sqlparser.Select:
-			buf.Myprintf("select %v from %v where 1 != 1", node.SelectExprs, node.From)
-			return
-		case *sqlparser.JoinTableExpr:
-			if node.Join == sqlparser.LeftJoinStr || node.Join == sqlparser.RightJoinStr {
-				// ON clause is requried
-				buf.Myprintf("%v %s %v on 1 != 1", node.LeftExpr, node.Join, node.RightExpr)
-			} else {
-				buf.Myprintf("%v %s %v", node.LeftExpr, node.Join, node.RightExpr)
-			}
-			return
 		case *sqlparser.ColName:
 			if !rb.isLocal(node) {
 				_, joinVar := jt.Lookup(node)
@@ -515,11 +529,10 @@ func (rb *route) generateFieldQuery(sel *sqlparser.Select, jt *jointab) string {
 			node.Name.Format(buf)
 			return
 		}
-		node.Format(buf)
+		sqlparser.FormatImpossibleQuery(buf, node)
 	}
-	buf := sqlparser.NewTrackedBuffer(formatter)
-	formatter(buf, sel)
-	return buf.ParsedQuery().Query
+
+	return sqlparser.NewTrackedBuffer(formatter).WriteNode(sel).ParsedQuery().Query
 }
 
 // SupplyVar should be unreachable.
@@ -536,18 +549,14 @@ func (rb *route) SupplyCol(ref colref) int {
 			return i
 		}
 	}
-	ts := ref.Meta.(*tabsym)
-	rb.Colsyms = append(rb.Colsyms, &colsym{
-		Alias:      sqlparser.NewColIdent(string(ts.Alias) + "." + ref.Name),
-		Underlying: ref,
-	})
+	rb.Colsyms = append(rb.Colsyms, &colsym{Underlying: ref})
 	rb.Select.SelectExprs = append(
 		rb.Select.SelectExprs,
 		&sqlparser.NonStarExpr{
 			Expr: &sqlparser.ColName{
 				Metadata:  ref.Meta,
-				Qualifier: &sqlparser.TableName{Name: ts.ASTName},
-				Name:      sqlparser.NewColIdent(ref.Name),
+				Qualifier: &sqlparser.TableName{Name: ref.Meta.(*tabsym).ASTName},
+				Name:      ref.Name(),
 			},
 		},
 	)

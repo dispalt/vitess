@@ -183,6 +183,18 @@ func (c *errorClient) ExecuteEntityIds(ctx context.Context, sql string, bindVari
 	return c.fallbackClient.ExecuteEntityIds(ctx, sql, bindVariables, keyspace, entityColumnName, entityKeyspaceIDs, tabletType, session, notInTransaction, options)
 }
 
+func (c *errorClient) ExecuteBatch(ctx context.Context, sqlList []string, bindVariablesList []map[string]interface{}, keyspace string, tabletType topodatapb.TabletType, asTransaction bool, session *vtgatepb.Session, options *querypb.ExecuteOptions) ([]sqltypes.QueryResponse, error) {
+	if len(sqlList) == 1 {
+		if err := requestToPartialError(sqlList[0], session); err != nil {
+			return nil, err
+		}
+		if err := requestToError(sqlList[0]); err != nil {
+			return nil, err
+		}
+	}
+	return c.fallbackClient.ExecuteBatch(ctx, sqlList, bindVariablesList, keyspace, tabletType, asTransaction, session, options)
+}
+
 func (c *errorClient) ExecuteBatchShards(ctx context.Context, queries []*vtgatepb.BoundShardQuery, tabletType topodatapb.TabletType, asTransaction bool, session *vtgatepb.Session, options *querypb.ExecuteOptions) ([]sqltypes.Result, error) {
 	if len(queries) == 1 {
 		if err := requestToPartialError(queries[0].Query.Sql, session); err != nil {
@@ -235,24 +247,24 @@ func (c *errorClient) StreamExecuteKeyRanges(ctx context.Context, sql string, bi
 	return c.fallbackClient.StreamExecuteKeyRanges(ctx, sql, bindVariables, keyspace, keyRanges, tabletType, options, sendReply)
 }
 
-func (c *errorClient) Begin(ctx context.Context) (*vtgatepb.Session, error) {
+func (c *errorClient) Begin(ctx context.Context, singledb bool) (*vtgatepb.Session, error) {
 	// The client sends the error request through the callerid, as there are no other parameters
 	cid := callerid.EffectiveCallerIDFromContext(ctx)
 	request := callerid.GetPrincipal(cid)
 	if err := requestToError(request); err != nil {
 		return nil, err
 	}
-	return c.fallbackClient.Begin(ctx)
+	return c.fallbackClient.Begin(ctx, singledb)
 }
 
-func (c *errorClient) Commit(ctx context.Context, session *vtgatepb.Session) error {
+func (c *errorClient) Commit(ctx context.Context, twopc bool, session *vtgatepb.Session) error {
 	// The client sends the error request through the callerid, as there are no other parameters
 	cid := callerid.EffectiveCallerIDFromContext(ctx)
 	request := callerid.GetPrincipal(cid)
 	if err := requestToError(request); err != nil {
 		return err
 	}
-	return c.fallbackClient.Commit(ctx, session)
+	return c.fallbackClient.Commit(ctx, twopc, session)
 }
 
 func (c *errorClient) Rollback(ctx context.Context, session *vtgatepb.Session) error {

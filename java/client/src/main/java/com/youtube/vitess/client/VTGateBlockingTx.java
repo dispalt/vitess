@@ -1,11 +1,13 @@
 package com.youtube.vitess.client;
 
 import com.youtube.vitess.client.cursor.Cursor;
+import com.youtube.vitess.client.cursor.CursorWithError;
 import com.youtube.vitess.proto.Topodata.KeyRange;
 import com.youtube.vitess.proto.Topodata.TabletType;
 import com.youtube.vitess.proto.Vtgate.BoundKeyspaceIdQuery;
 import com.youtube.vitess.proto.Vtgate.BoundShardQuery;
 
+import javax.annotation.Nullable;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +81,12 @@ public class VTGateBlockingTx {
         .checkedGet();
   }
 
+  public List<CursorWithError> executeBatch(Context ctx, List<String> queryList,
+      @Nullable List<Map<String, ?>> bindVarsList, TabletType tabletType)
+      throws SQLException {
+    return tx.executeBatch(ctx, queryList, bindVarsList, tabletType).checkedGet();
+  }
+
   public List<Cursor> executeBatchShards(
       Context ctx, Iterable<? extends BoundShardQuery> queries, TabletType tabletType)
       throws SQLException {
@@ -92,7 +100,11 @@ public class VTGateBlockingTx {
   }
 
   public void commit(Context ctx) throws SQLException {
-    tx.commit(ctx).checkedGet();
+    commit(ctx, false);
+  }
+
+  public void commit(Context ctx, boolean atomic) throws SQLException {
+    tx.commit(ctx, atomic).checkedGet();
   }
 
   public void rollback(Context ctx) throws SQLException {

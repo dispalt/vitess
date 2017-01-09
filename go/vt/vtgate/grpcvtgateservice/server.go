@@ -196,6 +196,29 @@ func (vtg *VTGate) ExecuteEntityIds(ctx context.Context, request *vtgatepb.Execu
 	}, nil
 }
 
+// ExecuteBatch is the RPC version of vtgateservice.VTGateService method
+func (vtg *VTGate) ExecuteBatch(ctx context.Context, request *vtgatepb.ExecuteBatchRequest) (response *vtgatepb.ExecuteBatchResponse, err error) {
+	defer vtg.server.HandlePanic(&err)
+	ctx = withCallerIDContext(ctx, request.CallerId)
+	results := make([]sqltypes.QueryResponse, len(request.Queries))
+	sqlQueries := make([]string, len(request.Queries))
+	bindVars := make([]map[string]interface{}, len(request.Queries))
+	for queryNum, query := range request.Queries {
+		bv, err := querytypes.Proto3ToBindVariables(query.BindVariables)
+		if err != nil {
+			return nil, vterrors.ToGRPCError(err)
+		}
+		sqlQueries[queryNum] = query.Sql
+		bindVars[queryNum] = bv
+	}
+	results, err = vtg.server.ExecuteBatch(ctx, sqlQueries, bindVars, request.Keyspace, request.TabletType, request.AsTransaction, request.Session, request.Options)
+	return &vtgatepb.ExecuteBatchResponse{
+		Results: sqltypes.QueryResponsesToProto3(results),
+		Session: request.Session,
+		Error:   vterrors.VtRPCErrorFromVtError(err),
+	}, nil
+}
+
 // ExecuteBatchShards is the RPC version of vtgateservice.VTGateService method
 func (vtg *VTGate) ExecuteBatchShards(ctx context.Context, request *vtgatepb.ExecuteBatchShardsRequest) (response *vtgatepb.ExecuteBatchShardsResponse, err error) {
 	defer vtg.server.HandlePanic(&err)
@@ -328,7 +351,7 @@ func (vtg *VTGate) StreamExecuteKeyRanges(request *vtgatepb.StreamExecuteKeyRang
 func (vtg *VTGate) Begin(ctx context.Context, request *vtgatepb.BeginRequest) (response *vtgatepb.BeginResponse, err error) {
 	defer vtg.server.HandlePanic(&err)
 	ctx = withCallerIDContext(ctx, request.CallerId)
-	session, vtgErr := vtg.server.Begin(ctx)
+	session, vtgErr := vtg.server.Begin(ctx, request.SingleDb)
 	if vtgErr == nil {
 		return &vtgatepb.BeginResponse{
 			Session: session,
@@ -341,7 +364,7 @@ func (vtg *VTGate) Begin(ctx context.Context, request *vtgatepb.BeginRequest) (r
 func (vtg *VTGate) Commit(ctx context.Context, request *vtgatepb.CommitRequest) (response *vtgatepb.CommitResponse, err error) {
 	defer vtg.server.HandlePanic(&err)
 	ctx = withCallerIDContext(ctx, request.CallerId)
-	vtgErr := vtg.server.Commit(ctx, request.Session)
+	vtgErr := vtg.server.Commit(ctx, request.Atomic, request.Session)
 	response = &vtgatepb.CommitResponse{}
 	if vtgErr == nil {
 		return response, nil
@@ -355,6 +378,18 @@ func (vtg *VTGate) Rollback(ctx context.Context, request *vtgatepb.RollbackReque
 	ctx = withCallerIDContext(ctx, request.CallerId)
 	vtgErr := vtg.server.Rollback(ctx, request.Session)
 	response = &vtgatepb.RollbackResponse{}
+	if vtgErr == nil {
+		return response, nil
+	}
+	return nil, vterrors.ToGRPCError(vtgErr)
+}
+
+// ResolveTransaction is the RPC version of vtgateservice.VTGateService method
+func (vtg *VTGate) ResolveTransaction(ctx context.Context, request *vtgatepb.ResolveTransactionRequest) (response *vtgatepb.ResolveTransactionResponse, err error) {
+	defer vtg.server.HandlePanic(&err)
+	ctx = withCallerIDContext(ctx, request.CallerId)
+	vtgErr := vtg.server.ResolveTransaction(ctx, request.Dtid)
+	response = &vtgatepb.ResolveTransactionResponse{}
 	if vtgErr == nil {
 		return response, nil
 	}

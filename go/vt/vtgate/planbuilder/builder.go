@@ -50,6 +50,10 @@ type builder interface {
 	// column. The function must return a colsym for the expression
 	// and the column number of the result.
 	PushSelect(expr *sqlparser.NonStarExpr, rb *route) (colsym *colsym, colnum int, err error)
+	// PushOrderByNull pushes the special case ORDER By NULL to
+	// all routes. It's safe to push down this clause because it's
+	// just on optimization hint.
+	PushOrderByNull()
 	// PushMisc pushes miscelleaneous constructs to all the routes.
 	// This should not propagate to subqueries.
 	PushMisc(sel *sqlparser.Select)
@@ -71,28 +75,37 @@ type builder interface {
 // VSchema defines the interface for this package to fetch
 // info about tables.
 type VSchema interface {
-	Find(keyspace, tablename string) (table *vindexes.Table, err error)
+	Find(keyspace, tablename sqlparser.TableIdent) (table *vindexes.Table, err error)
 }
 
 // Build builds a plan for a query based on the specified vschema.
 // It's the main entry point for this package.
 func Build(query string, vschema VSchema) (*engine.Plan, error) {
-	statement, err := sqlparser.Parse(query)
+	stmt, err := sqlparser.Parse(query)
 	if err != nil {
 		return nil, err
 	}
+	return BuildFromStmt(query, stmt, vschema)
+}
+
+// BuildFromStmt builds a plan based on the AST provided.
+// TODO(sougou): The query input is trusted as the source
+// of the AST. Maybe this function just returns instructions
+// and engine.Plan can be built by the caller.
+func BuildFromStmt(query string, stmt sqlparser.Statement, vschema VSchema) (*engine.Plan, error) {
+	var err error
 	plan := &engine.Plan{
 		Original: query,
 	}
-	switch statement := statement.(type) {
+	switch stmt := stmt.(type) {
 	case *sqlparser.Select:
-		plan.Instructions, err = buildSelectPlan(statement, vschema)
+		plan.Instructions, err = buildSelectPlan(stmt, vschema)
 	case *sqlparser.Insert:
-		plan.Instructions, err = buildInsertPlan(statement, vschema)
+		plan.Instructions, err = buildInsertPlan(stmt, vschema)
 	case *sqlparser.Update:
-		plan.Instructions, err = buildUpdatePlan(statement, vschema)
+		plan.Instructions, err = buildUpdatePlan(stmt, vschema)
 	case *sqlparser.Delete:
-		plan.Instructions, err = buildDeletePlan(statement, vschema)
+		plan.Instructions, err = buildDeletePlan(stmt, vschema)
 	case *sqlparser.Union, *sqlparser.Set, *sqlparser.DDL, *sqlparser.Other:
 		return nil, errors.New("unsupported construct")
 	default:

@@ -71,6 +71,36 @@ func (f *fakeVTGateService) ExecuteEntityIds(ctx context.Context, sql string, bi
 	return nil, nil
 }
 
+// ExecuteBatch is part of the VTGateService interface
+func (f *fakeVTGateService) ExecuteBatch(ctx context.Context, sql []string, bindVariables []map[string]interface{}, keyspace string, tabletType topodatapb.TabletType, asTransaction bool, session *vtgatepb.Session, options *querypb.ExecuteOptions) ([]sqltypes.QueryResponse, error) {
+	if len(sql) == 1 {
+		execCase, ok := execMap[sql[0]]
+		if !ok {
+			return nil, fmt.Errorf("no match for: %s", sql)
+		}
+		if bindVariables == nil {
+			bindVariables = make([]map[string]interface{}, 1)
+		}
+		query := &queryExecute{
+			SQL:           sql[0],
+			BindVariables: bindVariables[0],
+			Keyspace:      keyspace,
+			TabletType:    tabletType,
+			Session:       session,
+		}
+		if !reflect.DeepEqual(query, execCase.execQuery) {
+			return nil, fmt.Errorf("Execute request mismatch: got %+v, want %+v", query, execCase.execQuery)
+		}
+		if execCase.session != nil {
+			*session = *execCase.session
+		}
+		return []sqltypes.QueryResponse{
+			{QueryResult: execCase.result},
+		}, nil
+	}
+	return nil, nil
+}
+
 // ExecuteBatchShard is part of the VTGateService interface
 func (f *fakeVTGateService) ExecuteBatchShards(ctx context.Context, queries []*vtgatepb.BoundShardQuery, tabletType topodatapb.TabletType, asTransaction bool, session *vtgatepb.Session, options *querypb.ExecuteOptions) ([]sqltypes.Result, error) {
 	return nil, nil
@@ -131,12 +161,12 @@ func (f *fakeVTGateService) StreamExecuteKeyRanges(ctx context.Context, sql stri
 }
 
 // Begin is part of the VTGateService interface
-func (f *fakeVTGateService) Begin(ctx context.Context) (*vtgatepb.Session, error) {
+func (f *fakeVTGateService) Begin(ctx context.Context, singledb bool) (*vtgatepb.Session, error) {
 	return session1, nil
 }
 
 // Commit is part of the VTGateService interface
-func (f *fakeVTGateService) Commit(ctx context.Context, session *vtgatepb.Session) error {
+func (f *fakeVTGateService) Commit(ctx context.Context, twopc bool, session *vtgatepb.Session) error {
 	if !reflect.DeepEqual(session, session2) {
 		return errors.New("commit: session mismatch")
 	}
@@ -147,6 +177,14 @@ func (f *fakeVTGateService) Commit(ctx context.Context, session *vtgatepb.Sessio
 func (f *fakeVTGateService) Rollback(ctx context.Context, session *vtgatepb.Session) error {
 	if !reflect.DeepEqual(session, session2) {
 		return errors.New("rollback: session mismatch")
+	}
+	return nil
+}
+
+// ResolveTransaction is part of the VTGateService interface
+func (f *fakeVTGateService) ResolveTransaction(ctx context.Context, dtid string) error {
+	if dtid != dtid2 {
+		return errors.New("ResolveTransaction: dtid mismatch")
 	}
 	return nil
 }
@@ -197,7 +235,10 @@ var execMap = map[string]struct {
 		execQuery: &queryExecute{
 			SQL: "request",
 			BindVariables: map[string]interface{}{
-				"v1": int64(0),
+				"v1": &querypb.BindVariable{
+					Type:  querypb.Type_INT64,
+					Value: []byte("0"),
+				},
 			},
 			TabletType: topodatapb.TabletType_RDONLY,
 			Session:    nil,
@@ -209,7 +250,10 @@ var execMap = map[string]struct {
 		execQuery: &queryExecute{
 			SQL: "txRequest",
 			BindVariables: map[string]interface{}{
-				"v1": int64(0),
+				"v1": &querypb.BindVariable{
+					Type:  querypb.Type_INT64,
+					Value: []byte("0"),
+				},
 			},
 			TabletType: topodatapb.TabletType_MASTER,
 			Session:    session1,
@@ -221,7 +265,10 @@ var execMap = map[string]struct {
 		execQuery: &queryExecute{
 			SQL: "requestKeyspace",
 			BindVariables: map[string]interface{}{
-				"v1": int64(0),
+				"v1": &querypb.BindVariable{
+					Type:  querypb.Type_INT64,
+					Value: []byte("0"),
+				},
 			},
 			Keyspace:   "ks",
 			TabletType: topodatapb.TabletType_RDONLY,
@@ -234,7 +281,10 @@ var execMap = map[string]struct {
 		execQuery: &queryExecute{
 			SQL: "txRequestKeyspace",
 			BindVariables: map[string]interface{}{
-				"v1": int64(0),
+				"v1": &querypb.BindVariable{
+					Type:  querypb.Type_INT64,
+					Value: []byte("0"),
+				},
 			},
 			Keyspace:   "ks",
 			TabletType: topodatapb.TabletType_MASTER,
@@ -287,3 +337,5 @@ var session2 = &vtgatepb.Session{
 		},
 	},
 }
+
+var dtid2 = "aa"

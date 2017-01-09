@@ -23,7 +23,7 @@ import (
 	"github.com/youtube/vitess/go/vt/tabletserver/querytypes"
 	"github.com/youtube/vitess/go/vt/tabletserver/tabletconn"
 	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/zktopo/zktestserver"
+	"github.com/youtube/vitess/go/vt/topo/memorytopo"
 
 	binlogdatapb "github.com/youtube/vitess/go/vt/proto/binlogdata"
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
@@ -179,8 +179,8 @@ func (ftc *fakeTabletConn) SetRollback(ctx context.Context, target *querypb.Targ
 	return fmt.Errorf("not implemented in this test")
 }
 
-// ResolveTransaction is part of the TabletConn interface
-func (ftc *fakeTabletConn) ResolveTransaction(ctx context.Context, target *querypb.Target, dtid string) (err error) {
+// ConcludeTransaction is part of the TabletConn interface
+func (ftc *fakeTabletConn) ConcludeTransaction(ctx context.Context, target *querypb.Target, dtid string) (err error) {
 	return fmt.Errorf("not implemented in this test")
 }
 
@@ -352,7 +352,7 @@ var mockedThrottlerSettings = &sqltypes.Result{
 }
 
 func TestBinlogPlayerMapHorizontalSplit(t *testing.T) {
-	ts := zktestserver.New(t, []string{"cell1"})
+	ts := memorytopo.NewServer("cell1")
 	ctx := context.Background()
 
 	// create the keyspace, a full set of covering shards,
@@ -538,7 +538,7 @@ func TestBinlogPlayerMapHorizontalSplit(t *testing.T) {
 }
 
 func TestBinlogPlayerMapHorizontalSplitStopStartUntil(t *testing.T) {
-	ts := zktestserver.New(t, []string{"cell1"})
+	ts := memorytopo.NewServer("cell1")
 	ctx := context.Background()
 
 	// create the keyspace, a full set of covering shards,
@@ -732,7 +732,7 @@ func TestBinlogPlayerMapHorizontalSplitStopStartUntil(t *testing.T) {
 }
 
 func TestBinlogPlayerMapVerticalSplit(t *testing.T) {
-	ts := zktestserver.New(t, []string{"cell1"})
+	ts := memorytopo.NewServer("cell1")
 	ctx := context.Background()
 
 	// create the keyspaces, with one shard each
@@ -812,7 +812,7 @@ func TestBinlogPlayerMapVerticalSplit(t *testing.T) {
 				Shard:    "0",
 				Tables: []string{
 					"table1",
-					"funtables_*",
+					"/funtables_/",
 				},
 			},
 		}

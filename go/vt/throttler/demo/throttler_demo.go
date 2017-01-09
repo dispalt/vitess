@@ -19,10 +19,10 @@ import (
 	"github.com/youtube/vitess/go/vt/tabletserver/grpcqueryservice"
 	"github.com/youtube/vitess/go/vt/tabletserver/queryservice/fakes"
 	"github.com/youtube/vitess/go/vt/throttler"
+	"github.com/youtube/vitess/go/vt/topo/memorytopo"
 	"github.com/youtube/vitess/go/vt/vttest/fakesqldb"
 	"github.com/youtube/vitess/go/vt/wrangler"
 	"github.com/youtube/vitess/go/vt/wrangler/testlib"
-	"github.com/youtube/vitess/go/vt/zktopo/zktestserver"
 
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
@@ -94,7 +94,7 @@ type replica struct {
 
 func newReplica(lagUpdateInterval, degrationInterval, degrationDuration time.Duration) *replica {
 	t := &testing.T{}
-	ts := zktestserver.New(t, []string{"cell1"})
+	ts := memorytopo.NewServer("cell1")
 	wr := wrangler.New(logutil.NewConsoleLogger(), ts, tmclient.NewTabletManagerClient())
 	db := fakesqldb.Register()
 	fakeTablet := testlib.NewFakeTablet(t, wr, "cell1", 0,
@@ -267,6 +267,11 @@ func (c *client) stop() {
 // It gets called by the healthCheck instance every time a tablet broadcasts
 // a health update.
 func (c *client) StatsUpdate(ts *discovery.TabletStats) {
+	// Ignore unless REPLICA or RDONLY.
+	if ts.Target.TabletType != topodatapb.TabletType_REPLICA && ts.Target.TabletType != topodatapb.TabletType_RDONLY {
+		return
+	}
+
 	c.throttler.RecordReplicationLag(time.Now(), ts)
 }
 

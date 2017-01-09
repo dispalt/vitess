@@ -461,6 +461,7 @@ func TestSelectEqualFail(t *testing.T) {
 func TestSelectIN(t *testing.T) {
 	router, sbc1, sbc2, sbclookup := createRouterEnv()
 
+	// Constant in IN is just a number, not a bind variable.
 	_, err := routerExec(router, "select id from user where id in (1)", nil)
 	if err != nil {
 		t.Error(err)
@@ -478,6 +479,8 @@ func TestSelectIN(t *testing.T) {
 		t.Errorf("sbc2.Queries: %+v, want nil\n", sbc2.Queries)
 	}
 
+	// Constant in IN is just a couple numbers, not bind variables.
+	// They result in two different queries on two shards.
 	sbc1.Queries = nil
 	sbc2.Queries = nil
 	_, err = routerExec(router, "select id from user where id in (1, 3)", nil)
@@ -503,6 +506,8 @@ func TestSelectIN(t *testing.T) {
 		t.Errorf("sbc2.Queries: %+v, want %+v\n", sbc2.Queries, wantQueries)
 	}
 
+	// In is a bind variable list, that will end up on two shards.
+	// This is using an []interface{} for the bind variable list.
 	sbc1.Queries = nil
 	sbc2.Queries = nil
 	_, err = routerExec(router, "select id from user where id in ::vals", map[string]interface{}{
@@ -532,6 +537,78 @@ func TestSelectIN(t *testing.T) {
 		t.Errorf("sbc2.Queries: %+v, want %+v\n", sbc2.Queries, wantQueries)
 	}
 
+	// In is a bind variable list, that will end up on two shards.
+	// We use a BindVariable with TUPLE type.
+	sbc1.Queries = nil
+	sbc2.Queries = nil
+	_, err = routerExec(router, "select id from user where id in ::vals", map[string]interface{}{
+		"vals": &querypb.BindVariable{
+			Type: querypb.Type_TUPLE,
+			Values: []*querypb.Value{
+				{
+					Type:  querypb.Type_INT64,
+					Value: []byte{'1'},
+				},
+				{
+					Type:  querypb.Type_INT64,
+					Value: []byte{'3'},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Error(err)
+	}
+	wantQueries = []querytypes.BoundQuery{{
+		Sql: "select id from user where id in ::__vals",
+		BindVariables: map[string]interface{}{
+			"__vals": []interface{}{
+				sqltypes.MakeTrusted(querypb.Type_INT64, []byte{'1'}),
+			},
+			"vals": &querypb.BindVariable{
+				Type: querypb.Type_TUPLE,
+				Values: []*querypb.Value{
+					{
+						Type:  querypb.Type_INT64,
+						Value: []byte{'1'},
+					},
+					{
+						Type:  querypb.Type_INT64,
+						Value: []byte{'3'},
+					},
+				},
+			},
+		},
+	}}
+	if !reflect.DeepEqual(sbc1.Queries, wantQueries) {
+		t.Errorf("sbc1.Queries: \n%+v, want \n%+v\n", sbc1.Queries, wantQueries)
+	}
+	wantQueries = []querytypes.BoundQuery{{
+		Sql: "select id from user where id in ::__vals",
+		BindVariables: map[string]interface{}{
+			"__vals": []interface{}{
+				sqltypes.MakeTrusted(querypb.Type_INT64, []byte{'3'}),
+			},
+			"vals": &querypb.BindVariable{
+				Type: querypb.Type_TUPLE,
+				Values: []*querypb.Value{
+					{
+						Type:  querypb.Type_INT64,
+						Value: []byte{'1'},
+					},
+					{
+						Type:  querypb.Type_INT64,
+						Value: []byte{'3'},
+					},
+				},
+			},
+		},
+	}}
+	if !reflect.DeepEqual(sbc2.Queries, wantQueries) {
+		t.Errorf("sbc2.Queries: %+v, want %+v\n", sbc2.Queries, wantQueries)
+	}
+
+	// Convert a non-list bind variable.
 	sbc1.Queries = nil
 	sbc2.Queries = nil
 	_, err = routerExec(router, "select id from user where name = 'foo'", nil)
@@ -653,7 +730,7 @@ func TestSelectScatter(t *testing.T) {
 		sbc := hc.AddTestTablet(cell, shard, 1, "TestRouter", shard, topodatapb.TabletType_MASTER, true, 1, nil)
 		conns = append(conns, sbc)
 	}
-	router := NewRouter(context.Background(), serv, cell, "", scatterConn)
+	router := NewRouter(context.Background(), serv, cell, "", scatterConn, false)
 
 	_, err := routerExec(router, "select id from user", nil)
 	if err != nil {
@@ -685,7 +762,7 @@ func TestStreamSelectScatter(t *testing.T) {
 		sbc := hc.AddTestTablet(cell, shard, 1, "TestRouter", shard, topodatapb.TabletType_MASTER, true, 1, nil)
 		conns = append(conns, sbc)
 	}
-	router := NewRouter(context.Background(), serv, cell, "", scatterConn)
+	router := NewRouter(context.Background(), serv, cell, "", scatterConn, false)
 
 	sql := "select id from user"
 	result, err := routerStream(router, sql)
@@ -727,7 +804,7 @@ func TestSelectScatterFail(t *testing.T) {
 	}
 	serv := new(sandboxTopo)
 	scatterConn := newTestScatterConn(hc, serv, cell)
-	router := NewRouter(context.Background(), serv, cell, "", scatterConn)
+	router := NewRouter(context.Background(), serv, cell, "", scatterConn, false)
 
 	_, err := routerExec(router, "select id from user", nil)
 	want := "paramsSelectScatter: keyspace TestRouter fetch error: topo error GetSrvKeyspace"
@@ -839,8 +916,8 @@ func TestVarJoin(t *testing.T) {
 	router, sbc1, sbc2, _ := createRouterEnv()
 	result1 := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 		RowsAffected: 1,
 		InsertID:     0,
@@ -877,8 +954,8 @@ func TestVarJoinStream(t *testing.T) {
 	router, sbc1, sbc2, _ := createRouterEnv()
 	result1 := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 		RowsAffected: 1,
 		InsertID:     0,
@@ -915,8 +992,8 @@ func TestLeftJoin(t *testing.T) {
 	router, sbc1, sbc2, _ := createRouterEnv()
 	result1 := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 		RowsAffected: 1,
 		InsertID:     0,
@@ -927,7 +1004,7 @@ func TestLeftJoin(t *testing.T) {
 	}}
 	emptyResult := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}}
 	sbc1.SetResults(result1)
@@ -958,8 +1035,8 @@ func TestLeftJoinStream(t *testing.T) {
 	router, sbc1, sbc2, _ := createRouterEnv()
 	result1 := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 		RowsAffected: 1,
 		InsertID:     0,
@@ -970,7 +1047,7 @@ func TestLeftJoinStream(t *testing.T) {
 	}}
 	emptyResult := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}}
 	sbc1.SetResults(result1)
@@ -1003,11 +1080,11 @@ func TestEmptyJoin(t *testing.T) {
 	// which is sent to shard 0.
 	sbc1.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}, {
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}})
 	result, err := routerExec(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
@@ -1028,8 +1105,8 @@ func TestEmptyJoin(t *testing.T) {
 	}
 	wantResult := &sqltypes.Result{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}
 	if !reflect.DeepEqual(result, wantResult) {
@@ -1043,11 +1120,11 @@ func TestEmptyJoinStream(t *testing.T) {
 	// which is sent to shard 0.
 	sbc1.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}, {
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}})
 	result, err := routerStream(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1")
@@ -1068,8 +1145,8 @@ func TestEmptyJoinStream(t *testing.T) {
 	}
 	wantResult := &sqltypes.Result{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}
 	if !reflect.DeepEqual(result, wantResult) {
@@ -1082,16 +1159,16 @@ func TestEmptyJoinRecursive(t *testing.T) {
 	// Make sure it also works recursively.
 	sbc1.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}, {
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 	}, {
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}})
 	result, err := routerExec(router, "select u1.id, u2.id, u3.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 1", nil)
@@ -1115,9 +1192,9 @@ func TestEmptyJoinRecursive(t *testing.T) {
 	}
 	wantResult := &sqltypes.Result{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"id", sqltypes.Int32},
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}
 	if !reflect.DeepEqual(result, wantResult) {
@@ -1130,16 +1207,16 @@ func TestEmptyJoinRecursiveStream(t *testing.T) {
 	// Make sure it also works recursively.
 	sbc1.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}, {
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 	}, {
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}})
 	result, err := routerStream(router, "select u1.id, u2.id, u3.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 1")
@@ -1163,9 +1240,9 @@ func TestEmptyJoinRecursiveStream(t *testing.T) {
 	}
 	wantResult := &sqltypes.Result{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"id", sqltypes.Int32},
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}
 	if !reflect.DeepEqual(result, wantResult) {
@@ -1187,7 +1264,7 @@ func TestJoinErrors(t *testing.T) {
 	// Field query fails
 	sbc2.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}})
 	sbc1.MustFailServer = 1
@@ -1200,8 +1277,8 @@ func TestJoinErrors(t *testing.T) {
 	// Second query fails
 	sbc1.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 		Rows: [][]sqltypes.Value{{
 			sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
@@ -1218,8 +1295,8 @@ func TestJoinErrors(t *testing.T) {
 	// Nested join query fails on get fields
 	sbc2.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 	}})
 	sbc1.MustFailServer = 1
@@ -1232,7 +1309,7 @@ func TestJoinErrors(t *testing.T) {
 	// Field query fails on stream join
 	sbc2.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
 		},
 	}})
 	sbc1.MustFailServer = 1
@@ -1245,8 +1322,8 @@ func TestJoinErrors(t *testing.T) {
 	// Second query fails on stream join
 	sbc1.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
-			{"id", sqltypes.Int32},
-			{"col", sqltypes.Int32},
+			{Name:"id", Type:sqltypes.Int32},
+			{Name:"col", Type:sqltypes.Int32},
 		},
 		Rows: [][]sqltypes.Value{{
 			sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),

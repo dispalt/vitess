@@ -5,9 +5,6 @@
 package planbuilder
 
 import (
-	"fmt"
-
-	"github.com/youtube/vitess/go/cistring"
 	"github.com/youtube/vitess/go/vt/schema"
 	"github.com/youtube/vitess/go/vt/sqlparser"
 )
@@ -22,32 +19,13 @@ func GenerateFullQuery(statement sqlparser.Statement) *sqlparser.ParsedQuery {
 // GenerateFieldQuery generates a query to just fetch the field info
 // by adding impossible where clauses as needed.
 func GenerateFieldQuery(statement sqlparser.Statement) *sqlparser.ParsedQuery {
-	buf := sqlparser.NewTrackedBuffer(FormatImpossible)
-	buf.Myprintf("%v", statement)
+	buf := sqlparser.NewTrackedBuffer(sqlparser.FormatImpossibleQuery).WriteNode(statement)
+
 	if buf.HasBindVars() {
 		return nil
 	}
-	return buf.ParsedQuery()
-}
 
-// FormatImpossible is a callback function used by TrackedBuffer
-// to generate a modified version of the query where all selects
-// have impossible where clauses. It overrides a few node types
-// and passes the rest down to the default FormatNode.
-func FormatImpossible(buf *sqlparser.TrackedBuffer, node sqlparser.SQLNode) {
-	switch node := node.(type) {
-	case *sqlparser.Select:
-		buf.Myprintf("select %v from %v where 1 != 1", node.SelectExprs, node.From)
-	case *sqlparser.JoinTableExpr:
-		if node.Join == sqlparser.LeftJoinStr || node.Join == sqlparser.RightJoinStr {
-			// ON clause is requried
-			buf.Myprintf("%v %s %v on 1 != 1", node.LeftExpr, node.Join, node.RightExpr)
-		} else {
-			buf.Myprintf("%v %s %v", node.LeftExpr, node.Join, node.RightExpr)
-		}
-	default:
-		node.Format(buf)
-	}
+	return buf.ParsedQuery()
 }
 
 // GenerateSelectLimitQuery generates a select query with a limit clause.
@@ -119,17 +97,17 @@ func GenerateDeleteSubquery(del *sqlparser.Delete, tableInfo *schema.Table) *sql
 }
 
 // GenerateSubquery generates a subquery based on the input parameters.
-func GenerateSubquery(columns []cistring.CIString, table *sqlparser.AliasedTableExpr, where *sqlparser.Where, order sqlparser.OrderBy, limit *sqlparser.Limit, forUpdate bool) *sqlparser.ParsedQuery {
+func GenerateSubquery(columns []sqlparser.ColIdent, table *sqlparser.AliasedTableExpr, where *sqlparser.Where, order sqlparser.OrderBy, limit *sqlparser.Limit, forUpdate bool) *sqlparser.ParsedQuery {
 	buf := sqlparser.NewTrackedBuffer(nil)
 	if limit == nil {
 		limit = execLimit
 	}
-	fmt.Fprintf(buf, "select ")
-	i := 0
-	for i = 0; i < len(columns)-1; i++ {
-		fmt.Fprintf(buf, "%s, ", columns[i].Original())
+	buf.WriteString("select ")
+	prefix := ""
+	for _, c := range columns {
+		buf.Myprintf("%s%v", prefix, c)
+		prefix = ", "
 	}
-	fmt.Fprintf(buf, "%s", columns[i].Original())
 	buf.Myprintf(" from %v%v%v%v", table, where, order, limit)
 	if forUpdate {
 		buf.Myprintf(sqlparser.ForUpdateStr)

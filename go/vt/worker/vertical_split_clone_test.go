@@ -8,15 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/context"
+
 	"github.com/youtube/vitess/go/vt/mysqlctl/replication"
 	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
 	"github.com/youtube/vitess/go/vt/tabletserver/grpcqueryservice"
 	"github.com/youtube/vitess/go/vt/tabletserver/queryservice/fakes"
+	"github.com/youtube/vitess/go/vt/topo/memorytopo"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/vt/vttest/fakesqldb"
 	"github.com/youtube/vitess/go/vt/wrangler/testlib"
-	"github.com/youtube/vitess/go/vt/zktopo/zktestserver"
-	"golang.org/x/net/context"
 
 	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
@@ -50,7 +51,7 @@ func createVerticalSplitCloneDestinationFakeDb(t *testing.T, name string, insert
 // has not changed in the meantime.
 func TestVerticalSplitClone(t *testing.T) {
 	db := fakesqldb.Register()
-	ts := zktestserver.New(t, []string{"cell1", "cell2"})
+	ts := memorytopo.NewServer("cell1", "cell2")
 	ctx := context.Background()
 	wi := NewInstance(ts, "cell1", time.Second)
 
@@ -167,7 +168,7 @@ func TestVerticalSplitClone(t *testing.T) {
 		// code is executed. But the intent here is not to throttle the test, hence
 		// the rate limit is set very high.
 		"-max_tps", "9999",
-		"-tables", "moving.*,view1",
+		"-tables", "/moving/,view1",
 		"-source_reader_count", "10",
 		// Each chunk pipeline will process 10 rows. To spread them out across 3
 		// write queries, set the max row count per query to 4. (10 = 4+4+2)

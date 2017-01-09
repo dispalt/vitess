@@ -15,7 +15,6 @@ import (
 
 	"github.com/youtube/vitess/go/sqltypes"
 	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/vt/binlog/eventtoken"
 	"github.com/youtube/vitess/go/vt/concurrency"
 	"github.com/youtube/vitess/go/vt/tabletserver/querytypes"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
@@ -74,7 +73,7 @@ func (stc *ScatterConn) startAction(name string, target *querypb.Target) (time.T
 	return startTime, statsKey
 }
 
-func (stc *ScatterConn) endAction(startTime time.Time, allErrors *concurrency.AllErrorRecorder, statsKey []string, err *error) {
+func (stc *ScatterConn) endAction(startTime time.Time, allErrors *concurrency.AllErrorRecorder, statsKey []string, err *error, session *SafeSession) {
 	if *err != nil {
 		allErrors.RecordError(*err)
 		// Don't increment the error counter for duplicate
@@ -83,6 +82,9 @@ func (stc *ScatterConn) endAction(startTime time.Time, allErrors *concurrency.Al
 		ec := vterrors.RecoverVtErrorCode(*err)
 		if ec != vtrpcpb.ErrorCode_INTEGRITY_ERROR && ec != vtrpcpb.ErrorCode_BAD_INPUT {
 			stc.tabletCallErrorCount.Add(statsKey, 1)
+		}
+		if ec == vtrpcpb.ErrorCode_RESOURCE_EXHAUSTED || ec == vtrpcpb.ErrorCode_NOT_IN_TX {
+			session.SetRollback()
 		}
 	}
 	stc.timings.Record(statsKey, startTime)
@@ -105,7 +107,7 @@ func (stc *ScatterConn) Execute(
 	var mu sync.Mutex
 	qr := new(sqltypes.Result)
 
-	allErrors := stc.multiGoTransaction(
+	err := stc.multiGoTransaction(
 		ctx,
 		"Execute",
 		keyspace,
@@ -131,26 +133,18 @@ func (stc *ScatterConn) Execute(
 
 			mu.Lock()
 			defer mu.Unlock()
-			appendResult(qr, innerqr)
+			qr.AppendResult(innerqr)
 			return transactionID, nil
 		})
-
-	if allErrors.HasErrors() {
-		err := allErrors.AggrError(stc.aggregateErrors)
-		stc.txConn.RollbackIfNeeded(ctx, err, session)
-		return nil, err
-	}
-	return qr, nil
+	return qr, err
 }
 
-// ExecuteMulti is like Execute,
-// but each shard gets its own bindVars. If len(shards) is not equal to
-// len(bindVars), the function panics.
-func (stc *ScatterConn) ExecuteMulti(
+// ExecuteMultiShard is like Execute,
+// but each shard gets its own Sql Queries and BindVariables.
+func (stc *ScatterConn) ExecuteMultiShard(
 	ctx context.Context,
-	query string,
 	keyspace string,
-	shardVars map[string]map[string]interface{},
+	shardQueries map[string]querytypes.BoundQuery,
 	tabletType topodatapb.TabletType,
 	session *SafeSession,
 	notInTransaction bool,
@@ -160,12 +154,16 @@ func (stc *ScatterConn) ExecuteMulti(
 	// mu protects qr
 	var mu sync.Mutex
 	qr := new(sqltypes.Result)
+	shards := make([]string, 0, len(shardQueries))
+	for shard := range shardQueries {
+		shards = append(shards, shard)
+	}
 
-	allErrors := stc.multiGoTransaction(
+	err := stc.multiGoTransaction(
 		ctx,
 		"Execute",
 		keyspace,
-		getShards(shardVars),
+		shards,
 		tabletType,
 		session,
 		notInTransaction,
@@ -173,13 +171,13 @@ func (stc *ScatterConn) ExecuteMulti(
 			var innerqr *sqltypes.Result
 			if shouldBegin {
 				var err error
-				innerqr, transactionID, err = stc.gateway.BeginExecute(ctx, target, query, shardVars[target.Shard], options)
+				innerqr, transactionID, err = stc.gateway.BeginExecute(ctx, target, shardQueries[target.Shard].Sql, shardQueries[target.Shard].BindVariables, options)
 				if err != nil {
 					return transactionID, err
 				}
 			} else {
 				var err error
-				innerqr, err = stc.gateway.Execute(ctx, target, query, shardVars[target.Shard], transactionID, options)
+				innerqr, err = stc.gateway.Execute(ctx, target, shardQueries[target.Shard].Sql, shardQueries[target.Shard].BindVariables, transactionID, options)
 				if err != nil {
 					return transactionID, err
 				}
@@ -187,16 +185,10 @@ func (stc *ScatterConn) ExecuteMulti(
 
 			mu.Lock()
 			defer mu.Unlock()
-			appendResult(qr, innerqr)
+			qr.AppendResult(innerqr)
 			return transactionID, nil
 		})
-
-	if allErrors.HasErrors() {
-		err := allErrors.AggrError(stc.aggregateErrors)
-		stc.txConn.RollbackIfNeeded(ctx, err, session)
-		return nil, err
-	}
-	return qr, nil
+	return qr, err
 }
 
 // ExecuteEntityIds executes queries that are shard specific.
@@ -216,7 +208,7 @@ func (stc *ScatterConn) ExecuteEntityIds(
 	var mu sync.Mutex
 	qr := new(sqltypes.Result)
 
-	allErrors := stc.multiGoTransaction(
+	err := stc.multiGoTransaction(
 		ctx,
 		"ExecuteEntityIds",
 		keyspace,
@@ -245,19 +237,14 @@ func (stc *ScatterConn) ExecuteEntityIds(
 
 			mu.Lock()
 			defer mu.Unlock()
-			appendResult(qr, innerqr)
+			qr.AppendResult(innerqr)
 			return transactionID, nil
 		})
-	if allErrors.HasErrors() {
-		err := allErrors.AggrError(stc.aggregateErrors)
-		stc.txConn.RollbackIfNeeded(ctx, err, session)
-		return nil, err
-	}
-	return qr, nil
+	return qr, err
 }
 
 // scatterBatchRequest needs to be built to perform a scatter batch query.
-// A VTGate batch request will get translated into a differnt set of batches
+// A VTGate batch request will get translated into a different set of batches
 // for each keyspace:shard, and those results will map to different positions in the
 // results list. The length specifies the total length of the final results
 // list. In each request variable, the resultIndexes specifies the position
@@ -299,17 +286,19 @@ func (stc *ScatterConn) ExecuteBatch(
 
 			var err error
 			startTime, statsKey := stc.startAction("ExecuteBatch", target)
-			defer stc.endAction(startTime, allErrors, statsKey, &err)
+			defer stc.endAction(startTime, allErrors, statsKey, &err, session)
 
 			shouldBegin, transactionID := transactionInfo(target, session, false)
 			var innerqrs []sqltypes.Result
 			if shouldBegin {
 				innerqrs, transactionID, err = stc.gateway.BeginExecuteBatch(ctx, target, req.Queries, asTransaction, options)
 				if transactionID != 0 {
-					session.Append(&vtgatepb.Session_ShardSession{
+					if appendErr := session.Append(&vtgatepb.Session_ShardSession{
 						Target:        target,
 						TransactionId: transactionID,
-					})
+					}); appendErr != nil {
+						err = appendErr
+					}
 				}
 				if err != nil {
 					return
@@ -324,17 +313,17 @@ func (stc *ScatterConn) ExecuteBatch(
 			resMutex.Lock()
 			defer resMutex.Unlock()
 			for i, result := range innerqrs {
-				appendResult(&results[req.ResultIndexes[i]], &result)
+				results[req.ResultIndexes[i]].AppendResult(&result)
 			}
 		}(req)
 	}
 	wg.Wait()
-	// If we want to rollback, we have to do it before closing results
-	// so that the session is updated to be not InTransaction.
+
+	if session.MustRollback() {
+		stc.txConn.Rollback(ctx, session)
+	}
 	if allErrors.HasErrors() {
-		err := allErrors.AggrError(stc.aggregateErrors)
-		stc.txConn.RollbackIfNeeded(ctx, err, session)
-		return nil, err
+		return nil, allErrors.AggrError(stc.aggregateErrors)
 	}
 	return results, nil
 }
@@ -644,7 +633,7 @@ func (stc *ScatterConn) multiGo(
 			TabletType: tabletType,
 		}
 		startTime, statsKey := stc.startAction(name, target)
-		defer stc.endAction(startTime, allErrors, statsKey, &err)
+		defer stc.endAction(startTime, allErrors, statsKey, &err, nil)
 		err = action(target)
 	}
 
@@ -683,13 +672,13 @@ func (stc *ScatterConn) multiGoTransaction(
 	session *SafeSession,
 	notInTransaction bool,
 	action shardActionTransactionFunc,
-) (allErrors *concurrency.AllErrorRecorder) {
-	allErrors = new(concurrency.AllErrorRecorder)
+) error {
 	shardMap := unique(shards)
 	if len(shardMap) == 0 {
-		return allErrors
+		return nil
 	}
 
+	allErrors := new(concurrency.AllErrorRecorder)
 	oneShard := func(shard string) {
 		var err error
 		target := &querypb.Target{
@@ -698,27 +687,29 @@ func (stc *ScatterConn) multiGoTransaction(
 			TabletType: tabletType,
 		}
 		startTime, statsKey := stc.startAction(name, target)
-		defer stc.endAction(startTime, allErrors, statsKey, &err)
+		defer stc.endAction(startTime, allErrors, statsKey, &err, session)
 
 		shouldBegin, transactionID := transactionInfo(target, session, notInTransaction)
 		transactionID, err = action(target, shouldBegin, transactionID)
 		if shouldBegin && transactionID != 0 {
-			session.Append(&vtgatepb.Session_ShardSession{
+			if appendErr := session.Append(&vtgatepb.Session_ShardSession{
 				Target:        target,
 				TransactionId: transactionID,
-			})
-		}
-	}
-
-	if len(shardMap) == 1 {
-		// only one shard, do it synchronously.
-		for shard := range shardMap {
-			oneShard(shard)
-			return allErrors
+			}); appendErr != nil {
+				err = appendErr
+			}
 		}
 	}
 
 	var wg sync.WaitGroup
+	if len(shardMap) == 1 {
+		// only one shard, do it synchronously.
+		for shard := range shardMap {
+			oneShard(shard)
+			goto end
+		}
+	}
+
 	for shard := range shardMap {
 		wg.Add(1)
 		go func(shard string) {
@@ -727,7 +718,15 @@ func (stc *ScatterConn) multiGoTransaction(
 		}(shard)
 	}
 	wg.Wait()
-	return allErrors
+
+end:
+	if session.MustRollback() {
+		stc.txConn.Rollback(ctx, session)
+	}
+	if allErrors.HasErrors() {
+		return allErrors.AggrError(stc.aggregateErrors)
+	}
+	return nil
 }
 
 // transactionInfo looks at the current session, and returns:
@@ -765,45 +764,6 @@ func getShards(shardVars map[string]map[string]interface{}) []string {
 		shards = append(shards, k)
 	}
 	return shards
-}
-
-func appendResult(qr, innerqr *sqltypes.Result) {
-	if innerqr.RowsAffected == 0 && len(innerqr.Fields) == 0 {
-		return
-	}
-	if qr.Fields == nil {
-		qr.Fields = innerqr.Fields
-	}
-	qr.RowsAffected += innerqr.RowsAffected
-	if innerqr.InsertID != 0 {
-		qr.InsertID = innerqr.InsertID
-	}
-	if len(qr.Rows) == 0 {
-		// we haven't gotten any result yet, just save the new extras.
-		qr.Extras = innerqr.Extras
-	} else {
-		// Merge the EventTokens / Fresher flags within Extras.
-		if innerqr.Extras == nil {
-			// We didn't get any from innerq. Have to clear any
-			// we'd have gotten already.
-			if qr.Extras != nil {
-				qr.Extras.EventToken = nil
-				qr.Extras.Fresher = false
-			}
-		} else {
-			// We may have gotten an EventToken from
-			// innerqr.  If we also got one earlier, merge
-			// it. If we didn't get one earlier, we
-			// discard the new one.
-			if qr.Extras != nil {
-				// Note if any of the two is nil, we get nil.
-				qr.Extras.EventToken = eventtoken.Minimum(qr.Extras.EventToken, innerqr.Extras.EventToken)
-
-				qr.Extras.Fresher = qr.Extras.Fresher && innerqr.Extras.Fresher
-			}
-		}
-	}
-	qr.Rows = append(qr.Rows, innerqr.Rows...)
 }
 
 func unique(in []string) map[string]struct{} {

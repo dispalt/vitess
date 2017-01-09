@@ -118,7 +118,7 @@ func NewSplitParamsGivenSplitCount(
 }
 
 // GetSplitTableName returns the name of the table to split.
-func (sp *SplitParams) GetSplitTableName() string {
+func (sp *SplitParams) GetSplitTableName() sqlparser.TableIdent {
 	return sp.splitTableSchema.Name
 }
 
@@ -150,11 +150,11 @@ func newSplitParams(
 		return nil, fmt.Errorf("unsupported FROM clause in query: %v", sql)
 	}
 	tableName := sqlparser.GetTableName(aliasedTableExpr.Expr)
-	if tableName == "" {
+	if tableName.IsEmpty() {
 		return nil, fmt.Errorf("unsupported FROM clause in query"+
 			" (must be a simple table expression): %v", sql)
 	}
-	tableSchema, ok := schemaMap[tableName]
+	tableSchema, ok := schemaMap[tableName.String()]
 	if tableSchema == nil {
 		return nil, fmt.Errorf("can't find table in schema")
 	}
@@ -163,6 +163,11 @@ func newSplitParams(
 	var splitColumns []*schema.TableColumn
 	if len(splitColumnNames) == 0 {
 		splitColumns = getPrimaryKeyColumns(tableSchema)
+		if len(splitColumns) == 0 {
+			return nil, fmt.Errorf("no split columns where given and the queried table has"+
+				" no primary key columns (is the table a view? Running SplitQuery on a view"+
+				" is not supported). query: %v", sql)
+		}
 	} else {
 		splitColumns, err = findSplitColumnsInSchema(splitColumnNames, tableSchema)
 		if err != nil {
@@ -194,7 +199,7 @@ func findSplitColumnsInSchema(
 ) ([]*schema.TableColumn, error) {
 	result := make([]*schema.TableColumn, 0, len(splitColumnNames))
 	for _, splitColumnName := range splitColumnNames {
-		i := tableSchema.FindColumn(splitColumnName.Original())
+		i := tableSchema.FindColumn(splitColumnName)
 		if i == -1 {
 			return nil, fmt.Errorf("can't find split column: %v", splitColumnName)
 		}

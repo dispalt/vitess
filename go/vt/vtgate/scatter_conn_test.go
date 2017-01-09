@@ -7,6 +7,7 @@ package vtgate
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/youtube/vitess/go/sqltypes"
@@ -21,6 +22,7 @@ import (
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
 	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	"github.com/youtube/vitess/go/vt/tabletserver/querytypes"
 )
 
 // This file uses the sandbox_test framework.
@@ -32,12 +34,17 @@ func TestScatterConnExecute(t *testing.T) {
 }
 
 func TestScatterConnExecuteMulti(t *testing.T) {
-	testScatterConnGeneric(t, "TestScatterConnExecuteMulti", func(sc *ScatterConn, shards []string) (*sqltypes.Result, error) {
-		shardVars := make(map[string]map[string]interface{})
+	testScatterConnGeneric(t, "TestScatterConnExecuteMultiShard", func(sc *ScatterConn, shards []string) (*sqltypes.Result, error) {
+		shardQueries := make(map[string]querytypes.BoundQuery, len(shards))
 		for _, shard := range shards {
-			shardVars[shard] = nil
+			query := querytypes.BoundQuery{
+				Sql:           "query",
+				BindVariables: nil,
+			}
+			shardQueries[shard] = query
 		}
-		return sc.ExecuteMulti(context.Background(), "query", "TestScatterConnExecuteMulti", shardVars, topodatapb.TabletType_REPLICA, nil, false, nil)
+
+		return sc.ExecuteMultiShard(context.Background(), "TestScatterConnExecuteMultiShard", shardQueries, topodatapb.TabletType_REPLICA, nil, false, nil)
 	})
 }
 
@@ -67,7 +74,7 @@ func TestScatterConnStreamExecute(t *testing.T) {
 	testScatterConnGeneric(t, "TestScatterConnStreamExecute", func(sc *ScatterConn, shards []string) (*sqltypes.Result, error) {
 		qr := new(sqltypes.Result)
 		err := sc.StreamExecute(context.Background(), "query", nil, "TestScatterConnStreamExecute", shards, topodatapb.TabletType_REPLICA, nil, func(r *sqltypes.Result) error {
-			appendResult(qr, r)
+			qr.AppendResult(r)
 			return nil
 		})
 		return qr, err
@@ -82,7 +89,7 @@ func TestScatterConnStreamExecuteMulti(t *testing.T) {
 			shardVars[shard] = nil
 		}
 		err := sc.StreamExecuteMulti(context.Background(), "query", "TestScatterConnStreamExecuteMulti", shardVars, topodatapb.TabletType_REPLICA, nil, func(r *sqltypes.Result) error {
-			appendResult(qr, r)
+			qr.AppendResult(r)
 			return nil
 		})
 		return qr, err
@@ -224,7 +231,16 @@ func TestMultiExecs(t *testing.T) {
 			"bv1": 1,
 		},
 	}
-	_, _ = sc.ExecuteMulti(context.Background(), "query", "TestMultiExecs", shardVars, topodatapb.TabletType_REPLICA, nil, false, nil)
+	shardQueries := make(map[string]querytypes.BoundQuery, len(shardVars))
+	for shard, shardBindVars := range shardVars {
+		query := querytypes.BoundQuery{
+			Sql:           "query",
+			BindVariables: shardBindVars,
+		}
+		shardQueries[shard] = query
+	}
+
+	_, _ = sc.ExecuteMultiShard(context.Background(), "TestMultiExecs", shardQueries, topodatapb.TabletType_REPLICA, nil, false, nil)
 	if len(sbc0.Queries) == 0 || len(sbc1.Queries) == 0 {
 		t.Fatalf("didn't get expected query")
 	}
@@ -401,6 +417,44 @@ func TestScatterConnQueryNotInTransaction(t *testing.T) {
 	}
 }
 
+func TestScatterConnSingleDB(t *testing.T) {
+	createSandbox("TestScatterConnSingleDB")
+	hc := discovery.NewFakeHealthCheck()
+
+	hc.Reset()
+	sc := newTestScatterConn(hc, new(sandboxTopo), "aa")
+	hc.AddTestTablet("aa", "0", 1, "TestScatterConnSingleDB", "0", topodatapb.TabletType_MASTER, true, 1, nil)
+	hc.AddTestTablet("aa", "1", 1, "TestScatterConnSingleDB", "1", topodatapb.TabletType_MASTER, true, 1, nil)
+	session := NewSafeSession(&vtgatepb.Session{InTransaction: true, SingleDb: true})
+	_, err := sc.Execute(context.Background(), "query1", nil, "TestScatterConnSingleDB", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
+	if err != nil {
+		t.Error(err)
+	}
+	_, err = sc.Execute(context.Background(), "query1", nil, "TestScatterConnSingleDB", []string{"1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	want := "multi-db transaction attempted"
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Multi DB exec: %v, must contain %s", err, want)
+	}
+
+	session = NewSafeSession(&vtgatepb.Session{InTransaction: true, SingleDb: true})
+	queries := []*vtgatepb.BoundShardQuery{{
+		Query: &querypb.BoundQuery{
+			Sql:           "query",
+			BindVariables: nil,
+		},
+		Keyspace: "TestScatterConnSingleDB",
+		Shards:   []string{"0", "1"},
+	}}
+	scatterRequest, err := boundShardQueriesToScatterBatchRequest(queries)
+	if err != nil {
+		t.Error(err)
+	}
+	_, err = sc.ExecuteBatch(context.Background(), scatterRequest, topodatapb.TabletType_MASTER, false, session, nil)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Multi DB exec: %v, must contain %s", err, want)
+	}
+}
+
 func TestAppendResult(t *testing.T) {
 	qr := new(sqltypes.Result)
 	innerqr1 := &sqltypes.Result{
@@ -418,8 +472,8 @@ func TestAppendResult(t *testing.T) {
 		},
 	}
 	// test one empty result
-	appendResult(qr, innerqr1)
-	appendResult(qr, innerqr2)
+	qr.AppendResult(innerqr1)
+	qr.AppendResult(innerqr2)
 	if len(qr.Fields) != 1 {
 		t.Errorf("want 1, got %v", len(qr.Fields))
 	}
@@ -434,8 +488,8 @@ func TestAppendResult(t *testing.T) {
 	}
 	// test two valid results
 	qr = new(sqltypes.Result)
-	appendResult(qr, innerqr2)
-	appendResult(qr, innerqr2)
+	qr.AppendResult(innerqr2)
+	qr.AppendResult(innerqr2)
 	if len(qr.Fields) != 1 {
 		t.Errorf("want 1, got %v", len(qr.Fields))
 	}

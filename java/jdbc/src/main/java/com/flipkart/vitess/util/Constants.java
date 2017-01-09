@@ -87,6 +87,7 @@ public class Constants {
                 + "Statement.RETURN_GENERATED_KEYS to Statement.executeUpdate() or Connection.prepareStatement()";
         public static final String NO_KEYSPACE =
             "Querying Database Information without providing keyspace";
+        public static final String QUERY_FAILED = "One or more queries failed in batch execution";
     }
 
 
@@ -98,6 +99,7 @@ public class Constants {
         public static final String KEYSPACE = "KEYSPACE";
         public static final String USERNAME = "userName";
         public static final String EXECUTE_TYPE = "executeType";
+        public static final String TWOPC_ENABLED = "twopcEnabled";
     }
 
 

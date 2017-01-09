@@ -71,13 +71,7 @@ func (agent *ActionAgent) TabletExternallyReparented(ctx context.Context, extern
 		return nil
 	}
 
-	// Remember when we were first told we're the master.
-	// If another tablet claims to be master and offers a more recent time,
-	// that tablet will be trusted over us.
-	agent.mutex.Lock()
-	agent._tabletExternallyReparentedTime = startTime
-	agent._replicationDelay = 0
-	agent.mutex.Unlock()
+	agent.setLastReparentedTime(startTime)
 
 	// Create a reusable Reparent event with available info.
 	ev := &events.Reparent{
@@ -195,11 +189,18 @@ func (agent *ActionAgent) finalizeTabletExternallyReparented(ctx context.Context
 	// write it back. Now we use an update loop pattern to do that instead.
 	event.DispatchUpdate(ev, "updating global shard record")
 	log.Infof("finalizeTabletExternallyReparented: updating global shard record if needed")
-	_, err = agent.TopoServer.UpdateShardFields(ctx, tablet.Keyspace, tablet.Shard, func(si *topo.ShardInfo) error {
-		if topoproto.TabletAliasEqual(si.MasterAlias, tablet.Alias) {
+	_, err = agent.TopoServer.UpdateShardFields(ctx, tablet.Keyspace, tablet.Shard, func(currentSi *topo.ShardInfo) error {
+		if topoproto.TabletAliasEqual(currentSi.MasterAlias, tablet.Alias) {
 			return topo.ErrNoUpdateNeeded
 		}
-		si.MasterAlias = tablet.Alias
+		if !topoproto.TabletAliasEqual(currentSi.MasterAlias, oldMasterAlias) {
+			log.Warningf("old master alias (%v) not found in the global Shard record i.e. it has changed in the meantime."+
+				" We're not overwriting the value with the new master (%v) because the current value is probably newer."+
+				" (initial Shard record = %#v, current Shard record = %#v)",
+				oldMasterAlias, tablet.Alias, si, currentSi)
+			return topo.ErrNoUpdateNeeded
+		}
+		currentSi.MasterAlias = tablet.Alias
 		return nil
 	})
 	if err != nil {
@@ -208,4 +209,15 @@ func (agent *ActionAgent) finalizeTabletExternallyReparented(ctx context.Context
 
 	event.DispatchUpdate(ev, "finished")
 	return nil
+}
+
+// setLastReparentedTime remembers when we were first told we're the master.
+// If another tablet claims to be master and offers a more recent time,
+// that tablet will be trusted over us.
+func (agent *ActionAgent) setLastReparentedTime(t time.Time) {
+	agent.mutex.Lock()
+	defer agent.mutex.Unlock()
+
+	agent._tabletExternallyReparentedTime = t
+	agent._replicationDelay = 0
 }

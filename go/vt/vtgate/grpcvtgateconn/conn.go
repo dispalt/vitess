@@ -198,6 +198,34 @@ func (conn *vtgateConn) ExecuteEntityIds(ctx context.Context, query string, keys
 	return sqltypes.Proto3ToResult(response.Result), response.Session, nil
 }
 
+func (conn *vtgateConn) ExecuteBatch(ctx context.Context, queryList []string, bindVarsList []map[string]interface{}, keyspace string, tabletType topodatapb.TabletType, asTransaction bool, session interface{}, options *querypb.ExecuteOptions) ([]sqltypes.QueryResponse, interface{}, error) {
+	var s *vtgatepb.Session
+	if session != nil {
+		s = session.(*vtgatepb.Session)
+	}
+	q, err := querytypes.BoundQueriesToProto3(queryList, bindVarsList)
+	if err != nil {
+		return nil, session, err
+	}
+	request := &vtgatepb.ExecuteBatchRequest{
+		CallerId:      callerid.EffectiveCallerIDFromContext(ctx),
+		Session:       s,
+		Queries:       q,
+		Keyspace:      keyspace,
+		TabletType:    tabletType,
+		AsTransaction: asTransaction,
+		Options:       options,
+	}
+	response, err := conn.c.ExecuteBatch(ctx, request)
+	if err != nil {
+		return nil, session, vterrors.FromGRPCError(err)
+	}
+	if response.Error != nil {
+		return nil, response.Session, vterrors.FromVtRPCError(response.Error)
+	}
+	return sqltypes.Proto3ToQueryReponses(response.Results), response.Session, nil
+}
+
 func (conn *vtgateConn) ExecuteBatchShards(ctx context.Context, queries []*vtgatepb.BoundShardQuery, tabletType topodatapb.TabletType, asTransaction bool, session interface{}, options *querypb.ExecuteOptions) ([]sqltypes.Result, interface{}, error) {
 	var s *vtgatepb.Session
 	if session != nil {
@@ -374,9 +402,10 @@ func (conn *vtgateConn) StreamExecuteKeyspaceIds(ctx context.Context, query stri
 	}, nil
 }
 
-func (conn *vtgateConn) Begin(ctx context.Context) (interface{}, error) {
+func (conn *vtgateConn) Begin(ctx context.Context, singledb bool) (interface{}, error) {
 	request := &vtgatepb.BeginRequest{
 		CallerId: callerid.EffectiveCallerIDFromContext(ctx),
+		SingleDb: singledb,
 	}
 	response, err := conn.c.Begin(ctx, request)
 	if err != nil {
@@ -385,10 +414,11 @@ func (conn *vtgateConn) Begin(ctx context.Context) (interface{}, error) {
 	return response.Session, nil
 }
 
-func (conn *vtgateConn) Commit(ctx context.Context, session interface{}) error {
+func (conn *vtgateConn) Commit(ctx context.Context, session interface{}, twopc bool) error {
 	request := &vtgatepb.CommitRequest{
 		CallerId: callerid.EffectiveCallerIDFromContext(ctx),
 		Session:  session.(*vtgatepb.Session),
+		Atomic:   twopc,
 	}
 	_, err := conn.c.Commit(ctx, request)
 	return vterrors.FromGRPCError(err)
@@ -400,6 +430,15 @@ func (conn *vtgateConn) Rollback(ctx context.Context, session interface{}) error
 		Session:  session.(*vtgatepb.Session),
 	}
 	_, err := conn.c.Rollback(ctx, request)
+	return vterrors.FromGRPCError(err)
+}
+
+func (conn *vtgateConn) ResolveTransaction(ctx context.Context, dtid string) error {
+	request := &vtgatepb.ResolveTransactionRequest{
+		CallerId: callerid.EffectiveCallerIDFromContext(ctx),
+		Dtid:     dtid,
+	}
+	_, err := conn.c.ResolveTransaction(ctx, request)
 	return vterrors.FromGRPCError(err)
 }
 

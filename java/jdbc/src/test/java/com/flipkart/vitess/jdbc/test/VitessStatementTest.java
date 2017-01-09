@@ -8,8 +8,10 @@ import com.youtube.vitess.client.SQLFuture;
 import com.youtube.vitess.client.VTGateConn;
 import com.youtube.vitess.client.VTGateTx;
 import com.youtube.vitess.client.cursor.Cursor;
+import com.youtube.vitess.client.cursor.CursorWithError;
 import com.youtube.vitess.proto.Query;
 import com.youtube.vitess.proto.Topodata;
+import com.youtube.vitess.proto.Vtrpc;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -18,6 +20,8 @@ import org.powermock.api.mockito.PowerMockito;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
 
+import java.lang.reflect.Field;
+import java.sql.BatchUpdateException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -28,7 +32,8 @@ import java.util.List;
  * Created by harshit.gangal on 19/01/16.
  */
 
-@RunWith(PowerMockRunner.class) @PrepareForTest(VTGateConn.class) public class VitessStatementTest {
+@RunWith(PowerMockRunner.class) @PrepareForTest({VTGateConn.class,
+    Vtrpc.RPCError.class}) public class VitessStatementTest {
 
     private String sqlSelect = "select 1 from test_table";
     private String sqlShow = "show tables";
@@ -538,9 +543,10 @@ import java.util.List;
         VitessStatement statement = new VitessStatement(mockConn);
         try {
 
-            long expectedGeneratedId = 121;
-            int expectedAffectedRows = 1;
-            PowerMockito.when(mockCursor.getInsertId()).thenReturn(expectedGeneratedId);
+            long expectedFirstGeneratedId = 121;
+            long[] expectedGeneratedIds = {121, 122, 123, 124, 125};
+            int expectedAffectedRows = 5;
+            PowerMockito.when(mockCursor.getInsertId()).thenReturn(expectedFirstGeneratedId);
             PowerMockito.when(mockCursor.getRowsAffected())
                 .thenReturn(Long.valueOf(expectedAffectedRows));
 
@@ -549,9 +555,11 @@ import java.util.List;
             Assert.assertEquals(expectedAffectedRows, updateCount);
 
             ResultSet rs = statement.getGeneratedKeys();
-            rs.next();
-            long generatedId = rs.getLong(1);
-            Assert.assertEquals(expectedGeneratedId, generatedId);
+            int i = 0;
+            while (rs.next()) {
+                long generatedId = rs.getLong(1);
+                Assert.assertEquals(expectedGeneratedIds[i++], generatedId);
+            }
 
             //Fetching Generated Keys without notifying the driver
             statement.executeUpdate(sqlInsert);
@@ -565,8 +573,8 @@ import java.util.List;
             }
 
             //Fetching Generated Keys on update query
-            expectedGeneratedId = 0;
-            PowerMockito.when(mockCursor.getInsertId()).thenReturn(expectedGeneratedId);
+            expectedFirstGeneratedId = 0;
+            PowerMockito.when(mockCursor.getInsertId()).thenReturn(expectedFirstGeneratedId);
             updateCount = statement.executeUpdate(sqlUpdate, Statement.RETURN_GENERATED_KEYS);
             Assert.assertEquals(expectedAffectedRows, updateCount);
 
@@ -576,5 +584,83 @@ import java.util.List;
         } catch (SQLException e) {
             Assert.fail("Test failed " + e.getMessage());
         }
+    }
+
+    @Test public void testAddBatch() throws SQLException {
+        VitessConnection mockConn = PowerMockito.mock(VitessConnection.class);
+        VitessStatement statement = new VitessStatement(mockConn);
+        statement.addBatch(sqlInsert);
+        try {
+            Field privateStringField = VitessStatement.class.getDeclaredField("batchedArgs");
+            privateStringField.setAccessible(true);
+            Assert
+                .assertEquals(sqlInsert, ((List<String>) privateStringField.get(statement)).get(0));
+        } catch (NoSuchFieldException e) {
+            Assert.fail("Private Field should exists: batchedArgs");
+        } catch (IllegalAccessException e) {
+            Assert.fail("Private Field should be accessible: batchedArgs");
+        }
+    }
+
+    @Test public void testClearBatch() throws SQLException {
+        VitessConnection mockConn = PowerMockito.mock(VitessConnection.class);
+        VitessStatement statement = new VitessStatement(mockConn);
+        statement.addBatch(sqlInsert);
+        statement.clearBatch();
+        try {
+            Field privateStringField = VitessStatement.class.getDeclaredField("batchedArgs");
+            privateStringField.setAccessible(true);
+            Assert.assertTrue(((List<String>) privateStringField.get(statement)).isEmpty());
+        } catch (NoSuchFieldException e) {
+            Assert.fail("Private Field should exists: batchedArgs");
+        } catch (IllegalAccessException e) {
+            Assert.fail("Private Field should be accessible: batchedArgs");
+        }
+    }
+
+    @Test public void testExecuteBatch() throws SQLException {
+        VitessConnection mockConn = PowerMockito.mock(VitessConnection.class);
+        VitessStatement statement = new VitessStatement(mockConn);
+        int[] updateCounts = statement.executeBatch();
+        Assert.assertEquals(0, updateCounts.length);
+
+        VTGateConn mockVtGateConn = PowerMockito.mock(VTGateConn.class);
+        PowerMockito.when(mockConn.getVtGateConn()).thenReturn(mockVtGateConn);
+        PowerMockito.when(mockConn.getTabletType()).thenReturn(Topodata.TabletType.MASTER);
+        PowerMockito.when(mockConn.getAutoCommit()).thenReturn(true);
+
+        SQLFuture mockSqlFutureCursor = PowerMockito.mock(SQLFuture.class);
+        PowerMockito.when(mockVtGateConn
+            .executeBatch(Matchers.any(Context.class), Matchers.anyList(), Matchers.anyList(),
+                Matchers.any(Topodata.TabletType.class))).thenReturn(mockSqlFutureCursor);
+
+        List<CursorWithError> mockCursorWithErrorList = new ArrayList<>();
+        PowerMockito.when(mockSqlFutureCursor.checkedGet()).thenReturn(mockCursorWithErrorList);
+
+        CursorWithError mockCursorWithError1 = PowerMockito.mock(CursorWithError.class);
+        PowerMockito.when(mockCursorWithError1.getError()).thenReturn(null);
+        PowerMockito.when(mockCursorWithError1.getCursor())
+            .thenReturn(PowerMockito.mock(Cursor.class));
+        mockCursorWithErrorList.add(mockCursorWithError1);
+
+        statement.addBatch(sqlUpdate);
+        updateCounts = statement.executeBatch();
+        Assert.assertEquals(1, updateCounts.length);
+
+        CursorWithError mockCursorWithError2 = PowerMockito.mock(CursorWithError.class);
+        PowerMockito.when(mockCursorWithError2.getError())
+            .thenReturn(PowerMockito.mock(Vtrpc.RPCError.class));
+        mockCursorWithErrorList.add(mockCursorWithError2);
+        statement.addBatch(sqlUpdate);
+        statement.addBatch(sqlUpdate);
+        try {
+            statement.executeBatch();
+            Assert.fail("Should have thrown Exception");
+        } catch (BatchUpdateException ex) {
+            Assert.assertEquals(Constants.SQLExceptionMessages.QUERY_FAILED, ex.getMessage());
+            Assert.assertEquals(2, ex.getUpdateCounts().length);
+            Assert.assertEquals(Statement.EXECUTE_FAILED, ex.getUpdateCounts()[1]);
+        }
+
     }
 }

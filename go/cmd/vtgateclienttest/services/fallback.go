@@ -47,6 +47,10 @@ func (c fallbackClient) ExecuteEntityIds(ctx context.Context, sql string, bindVa
 	return c.fallback.ExecuteEntityIds(ctx, sql, bindVariables, keyspace, entityColumnName, entityKeyspaceIDs, tabletType, session, notInTransaction, options)
 }
 
+func (c fallbackClient) ExecuteBatch(ctx context.Context, sqlList []string, bindVariablesList []map[string]interface{}, keyspace string, tabletType topodatapb.TabletType, asTransaction bool, session *vtgatepb.Session, options *querypb.ExecuteOptions) ([]sqltypes.QueryResponse, error) {
+	return c.fallback.ExecuteBatch(ctx, sqlList, bindVariablesList, keyspace, tabletType, asTransaction, session, options)
+}
+
 func (c fallbackClient) ExecuteBatchShards(ctx context.Context, queries []*vtgatepb.BoundShardQuery, tabletType topodatapb.TabletType, asTransaction bool, session *vtgatepb.Session, options *querypb.ExecuteOptions) ([]sqltypes.Result, error) {
 	return c.fallback.ExecuteBatchShards(ctx, queries, tabletType, asTransaction, session, options)
 }
@@ -71,16 +75,20 @@ func (c fallbackClient) StreamExecuteKeyRanges(ctx context.Context, sql string, 
 	return c.fallback.StreamExecuteKeyRanges(ctx, sql, bindVariables, keyspace, keyRanges, tabletType, options, sendReply)
 }
 
-func (c fallbackClient) Begin(ctx context.Context) (*vtgatepb.Session, error) {
-	return c.fallback.Begin(ctx)
+func (c fallbackClient) Begin(ctx context.Context, singledb bool) (*vtgatepb.Session, error) {
+	return c.fallback.Begin(ctx, singledb)
 }
 
-func (c fallbackClient) Commit(ctx context.Context, session *vtgatepb.Session) error {
-	return c.fallback.Commit(ctx, session)
+func (c fallbackClient) Commit(ctx context.Context, twopc bool, session *vtgatepb.Session) error {
+	return c.fallback.Commit(ctx, twopc, session)
 }
 
 func (c fallbackClient) Rollback(ctx context.Context, session *vtgatepb.Session) error {
 	return c.fallback.Rollback(ctx, session)
+}
+
+func (c fallbackClient) ResolveTransaction(ctx context.Context, dtid string) error {
+	return c.fallback.ResolveTransaction(ctx, dtid)
 }
 
 func (c fallbackClient) SplitQuery(

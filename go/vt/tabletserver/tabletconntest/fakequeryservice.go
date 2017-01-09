@@ -70,7 +70,7 @@ var TestVTGateCallerID = &querypb.VTGateCallerID{
 }
 
 var TestExecuteOptions = &querypb.ExecuteOptions{
-	ExcludeFieldNames: true,
+	IncludedFields: querypb.ExecuteOptions_TYPE_ONLY,
 	IncludeEventToken: true,
 	CompareEventToken: &querypb.EventToken{
 		Timestamp: 9876,
@@ -268,17 +268,17 @@ func (f *FakeQueryService) SetRollback(ctx context.Context, target *querypb.Targ
 	return nil
 }
 
-// ResolveTransaction is part of the queryservice.QueryService interface
-func (f *FakeQueryService) ResolveTransaction(ctx context.Context, target *querypb.Target, dtid string) (err error) {
+// ConcludeTransaction is part of the queryservice.QueryService interface
+func (f *FakeQueryService) ConcludeTransaction(ctx context.Context, target *querypb.Target, dtid string) (err error) {
 	if f.HasError {
 		return f.TabletError
 	}
 	if f.Panics {
 		panic(fmt.Errorf("test-triggered panic"))
 	}
-	f.checkTargetCallerID(ctx, "ResolveTransaction", target)
+	f.checkTargetCallerID(ctx, "ConcludeTransaction", target)
 	if dtid != Dtid {
-		f.t.Errorf("ResolveTransaction: invalid dtid: got %s expected %s", dtid, Dtid)
+		f.t.Errorf("ConcludeTransaction: invalid dtid: got %s expected %s", dtid, Dtid)
 	}
 	return nil
 }
@@ -287,7 +287,6 @@ var Metadata = &querypb.TransactionMetadata{
 	Dtid:         "aa",
 	State:        querypb.TransactionState_PREPARE,
 	TimeCreated:  1,
-	TimeUpdated:  2,
 	Participants: Participants,
 }
 
@@ -309,7 +308,10 @@ func (f *FakeQueryService) ReadTransaction(ctx context.Context, target *querypb.
 const ExecuteQuery = "executeQuery"
 
 var ExecuteBindVars = map[string]interface{}{
-	"bind1": int64(1114444),
+	"bind1": &querypb.BindVariable{
+		Type:  querypb.Type_INT64,
+		Value: []byte("1114444"),
+	},
 }
 
 const ExecuteTransactionID int64 = 678
@@ -374,7 +376,10 @@ func (f *FakeQueryService) Execute(ctx context.Context, target *querypb.Target, 
 const StreamExecuteQuery = "streamExecuteQuery"
 
 var StreamExecuteBindVars = map[string]interface{}{
-	"bind1": int64(93848000),
+	"bind1": &querypb.BindVariable{
+		Type:  querypb.Type_INT64,
+		Value: []byte("93848000"),
+	},
 }
 
 var StreamExecuteQueryResult1 = sqltypes.Result{
@@ -443,13 +448,19 @@ var ExecuteBatchQueries = []querytypes.BoundQuery{
 	{
 		Sql: "executeBatchQueries1",
 		BindVariables: map[string]interface{}{
-			"bind1": int64(43),
+			"bind1": &querypb.BindVariable{
+				Type:  querypb.Type_INT64,
+				Value: []byte("43"),
+			},
 		},
 	},
 	{
 		Sql: "executeBatchQueries2",
 		BindVariables: map[string]interface{}{
-			"bind2": int64(72),
+			"bind2": &querypb.BindVariable{
+				Type:  querypb.Type_INT64,
+				Value: []byte("72"),
+			},
 		},
 	},
 }
@@ -534,7 +545,10 @@ const SplitQuerySplitCount = 372
 var SplitQueryBoundQuery = querytypes.BoundQuery{
 	Sql: "splitQuery",
 	BindVariables: map[string]interface{}{
-		"bind1": int64(43),
+		"bind1": &querypb.BindVariable{
+			Type:  querypb.Type_INT64,
+			Value: []byte("43"),
+		},
 	},
 }
 
@@ -545,8 +559,14 @@ var SplitQueryQuerySplitList = []querytypes.QuerySplit{
 	{
 		Sql: "splitQuery",
 		BindVariables: map[string]interface{}{
-			"bind1":       int64(43),
-			"keyspace_id": int64(3333),
+			"bind1": &querypb.BindVariable{
+				Type:  querypb.Type_INT64,
+				Value: []byte("43"),
+			},
+			"keyspace_id": &querypb.BindVariable{
+				Type:  querypb.Type_INT64,
+				Value: []byte("3333"),
+			},
 		},
 		RowCount: 4456,
 	},
