@@ -37,9 +37,9 @@ var (
 		"begin":    binlogdatapb.BinlogTransaction_Statement_BL_BEGIN,
 		"commit":   binlogdatapb.BinlogTransaction_Statement_BL_COMMIT,
 		"rollback": binlogdatapb.BinlogTransaction_Statement_BL_ROLLBACK,
-		"insert":   binlogdatapb.BinlogTransaction_Statement_BL_DML,
-		"update":   binlogdatapb.BinlogTransaction_Statement_BL_DML,
-		"delete":   binlogdatapb.BinlogTransaction_Statement_BL_DML,
+		"insert":   binlogdatapb.BinlogTransaction_Statement_BL_INSERT,
+		"update":   binlogdatapb.BinlogTransaction_Statement_BL_UPDATE,
+		"delete":   binlogdatapb.BinlogTransaction_Statement_BL_DELETE,
 		"create":   binlogdatapb.BinlogTransaction_Statement_BL_DDL,
 		"alter":    binlogdatapb.BinlogTransaction_Statement_BL_DDL,
 		"drop":     binlogdatapb.BinlogTransaction_Statement_BL_DDL,
@@ -259,20 +259,15 @@ func (bls *Streamer) parseEvents(ctx context.Context, events <-chan replication.
 			return pos, fmt.Errorf("can't strip checksum from binlog event: %v, event data: %#v", err, ev)
 		}
 
-		// Update the GTID if the event has one. The actual event type could be
-		// something special like GTID_EVENT (MariaDB, MySQL 5.6), or it could be
-		// an arbitrary event with a GTID in the header (Google MySQL).
-		if ev.HasGTID(format) {
-			gtid, err = ev.GTID(format)
+		switch {
+		case ev.IsGTID(): // GTID_EVENT: update current GTID, maybe BEGIN.
+			var hasBegin bool
+			gtid, hasBegin, err = ev.GTID(format)
 			if err != nil {
 				return pos, fmt.Errorf("can't get GTID from binlog event: %v, event data: %#v", err, ev)
 			}
 			pos = replication.AppendGTID(pos, gtid)
-		}
-
-		switch {
-		case ev.IsGTID(): // GTID_EVENT
-			if ev.IsBeginGTID(format) {
+			if hasBegin {
 				begin()
 			}
 		case ev.IsXID(): // XID_EVENT (equivalent to COMMIT)

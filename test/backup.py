@@ -11,14 +11,11 @@ import environment
 import tablet
 import utils
 
-use_mysqlctld = True
+use_mysqlctld = False
 
-tablet_master = tablet.Tablet(use_mysqlctld=use_mysqlctld,
-                              vt_dba_passwd='VtDbaPass')
-tablet_replica1 = tablet.Tablet(use_mysqlctld=use_mysqlctld,
-                                vt_dba_passwd='VtDbaPass')
-tablet_replica2 = tablet.Tablet(use_mysqlctld=use_mysqlctld,
-                                vt_dba_passwd='VtDbaPass')
+tablet_master = None
+tablet_replica1 = None
+tablet_replica2 = None
 
 new_init_db = ''
 db_credentials_file = ''
@@ -26,9 +23,32 @@ db_credentials_file = ''
 
 def setUpModule():
   global new_init_db, db_credentials_file
+  global tablet_master, tablet_replica1, tablet_replica2
+
+  tablet_master = tablet.Tablet(use_mysqlctld=use_mysqlctld,
+                                vt_dba_passwd='VtDbaPass')
+  tablet_replica1 = tablet.Tablet(use_mysqlctld=use_mysqlctld,
+                                  vt_dba_passwd='VtDbaPass')
+  tablet_replica2 = tablet.Tablet(use_mysqlctld=use_mysqlctld,
+                                  vt_dba_passwd='VtDbaPass')
 
   try:
     environment.topo_server().setup()
+
+    # Determine which column is used for user passwords in this MySQL version.
+    proc = tablet_master.init_mysql()
+    if use_mysqlctld:
+      tablet_master.wait_for_mysqlctl_socket()
+    else:
+      utils.wait_procs([proc])
+    try:
+      tablet_master.mquery('mysql', 'select password from mysql.user limit 0',
+                           user='root')
+      password_col = 'password'
+    except MySQLdb.DatabaseError:
+      password_col = 'authentication_string'
+    utils.wait_procs([tablet_master.teardown_mysql()])
+    tablet_master.remove_tree(ignore_options=True)
 
     # Create a new init_db.sql file that sets up passwords for all users.
     # Then we use a db-credentials-file with the passwords.
@@ -39,20 +59,20 @@ def setUpModule():
       fd.write(init_db)
       fd.write('''
 # Set real passwords for all users.
-UPDATE mysql.user SET Password = PASSWORD('RootPass')
+UPDATE mysql.user SET %s = PASSWORD('RootPass')
   WHERE User = 'root' AND Host = 'localhost';
-UPDATE mysql.user SET Password = PASSWORD('VtDbaPass')
+UPDATE mysql.user SET %s = PASSWORD('VtDbaPass')
   WHERE User = 'vt_dba' AND Host = 'localhost';
-UPDATE mysql.user SET Password = PASSWORD('VtAppPass')
+UPDATE mysql.user SET %s = PASSWORD('VtAppPass')
   WHERE User = 'vt_app' AND Host = 'localhost';
-UPDATE mysql.user SET Password = PASSWORD('VtAllprivsPass')
+UPDATE mysql.user SET %s = PASSWORD('VtAllprivsPass')
   WHERE User = 'vt_allprivs' AND Host = 'localhost';
-UPDATE mysql.user SET Password = PASSWORD('VtReplPass')
-  WHERE User = 'vt_repl' AND Host = '%';
-UPDATE mysql.user SET Password = PASSWORD('VtFilteredPass')
+UPDATE mysql.user SET %s = PASSWORD('VtReplPass')
+  WHERE User = 'vt_repl' AND Host = '%%';
+UPDATE mysql.user SET %s = PASSWORD('VtFilteredPass')
   WHERE User = 'vt_filtered' AND Host = 'localhost';
 FLUSH PRIVILEGES;
-''')
+''' % tuple([password_col] * 6))
     credentials = {
         'vt_dba': ['VtDbaPass'],
         'vt_app': ['VtAppPass'],
