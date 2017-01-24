@@ -84,6 +84,8 @@ type SandboxConn struct {
 	// ReadTransactionResults is used for returning results for ReadTransaction.
 	ReadTransactionResults []*querypb.TransactionMetadata
 
+	MessageIDs []*querypb.Value
+
 	// transaction id generator
 	TransactionID sync2.AtomicInt64
 }
@@ -412,6 +414,18 @@ func (sbc *SandboxConn) BeginExecuteBatch(ctx context.Context, target *querypb.T
 	}
 	results, err := sbc.ExecuteBatch(ctx, target, queries, asTransaction, transactionID, options)
 	return results, transactionID, err
+}
+
+// MessageStream is part of the TabletConn interface.
+func (sbc *SandboxConn) MessageStream(ctx context.Context, target *querypb.Target, name string, sendReply func(*sqltypes.Result) error) (err error) {
+	sendReply(SingleRowResult)
+	return nil
+}
+
+// MessageAck is part of the TabletConn interface.
+func (sbc *SandboxConn) MessageAck(ctx context.Context, target *querypb.Target, name string, ids []*querypb.Value) (count int64, err error) {
+	sbc.MessageIDs = ids
+	return int64(len(ids)), nil
 }
 
 // SandboxSQRowCount is the default number of fake splits returned.

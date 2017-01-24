@@ -7,6 +7,7 @@ package tabletserver
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +141,86 @@ func TestTableInfoSequence(t *testing.T) {
 	}
 }
 
+func TestTableInfoMessage(t *testing.T) {
+	db := fakesqldb.Register()
+	for query, result := range getMessageTableInfoQueries() {
+		db.AddQuery(query, result)
+	}
+	tableInfo, err := newTestTableInfo("USER_TABLE", "vitess_message,vt_ack_wait=30,vt_purge_after=120,vt_batch_size=1,vt_cache_size=10,vt_poller_interval=30", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &TableInfo{
+		Table: &schema.Table{
+			Name: sqlparser.NewTableIdent("test_table"),
+			Type: schema.Message,
+		},
+		MessageInfo: &MessageInfo{
+			IDPKIndex: 1,
+			Fields: []*querypb.Field{{
+				Name: "id",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "message",
+				Type: sqltypes.VarBinary,
+			}},
+			AckWaitDuration:    30 * time.Second,
+			PurgeAfterDuration: 120 * time.Second,
+			BatchSize:          1,
+			CacheSize:          10,
+			PollInterval:       30 * time.Second,
+		},
+	}
+	tableInfo.Columns = nil
+	tableInfo.Indexes = nil
+	tableInfo.PKColumns = nil
+	if !reflect.DeepEqual(tableInfo, want) {
+		t.Errorf("TableInfo:\n%v, want\n%v", tableInfo, want)
+	}
+
+	// Missing property
+	_, err = newTestTableInfo("USER_TABLE", "vitess_message,vt_ack_wait=30", db)
+	wanterr := "not specified for message table"
+	if err == nil || !strings.Contains(err.Error(), wanterr) {
+		t.Errorf("newTestTableInfo: %v, want %s", err, wanterr)
+	}
+
+	// id column must be part of primary key.
+	for query, result := range getMessageTableInfoQueries() {
+		db.AddQuery(query, result)
+	}
+	db.AddQuery(
+		"show index from test_table",
+		&sqltypes.Result{
+			RowsAffected: 2,
+			Rows: [][]sqltypes.Value{
+				{
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("PRIMARY")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("time_scheduled")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("300")),
+				},
+			},
+		})
+	_, err = newTestTableInfo("USER_TABLE", "vitess_message,vt_ack_wait=30,vt_purge_after=120,vt_batch_size=1,vt_cache_size=10,vt_poller_interval=30", db)
+	wanterr = "id column is not part of the primary key for message table: test_table"
+	if err == nil || err.Error() != wanterr {
+		t.Errorf("newTestTableInfo: %v, want %s", err, wanterr)
+	}
+
+	for query, result := range getTestTableInfoQueries() {
+		db.AddQuery(query, result)
+	}
+	_, err = newTestTableInfo("USER_TABLE", "vitess_message,vt_ack_wait=30,vt_purge_after=120,vt_batch_size=1,vt_cache_size=10,vt_poller_interval=30", db)
+	wanterr = "time_scheduled missing from message table: test_table"
+	if err == nil || err.Error() != wanterr {
+		t.Errorf("newTestTableInfo: %v, want %s", err, wanterr)
+	}
+}
+
 func newTestTableInfo(tableType string, comment string, db *fakesqldb.DB) (*TableInfo, error) {
 	ctx := context.Background()
 	appParams := sqldb.ConnParams{Engine: db.Name}
@@ -232,6 +313,119 @@ func getTestTableInfoQueries() map[string]*sqltypes.Result {
 					sqltypes.MakeString([]byte("INDEX")),
 					sqltypes.MakeString([]byte{}),
 					sqltypes.MakeString([]byte("name")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("300")),
+				},
+			},
+		},
+	}
+}
+
+func getMessageTableInfoQueries() map[string]*sqltypes.Result {
+	return map[string]*sqltypes.Result{
+		"select * from test_table where 1 != 1": {
+			Fields: []*querypb.Field{{
+				Name: "time_scheduled",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "id",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "time_next",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "epoch",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "time_created",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "time_acked",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "message",
+				Type: sqltypes.VarBinary,
+			}},
+		},
+		"describe test_table": {
+			RowsAffected: 2,
+			Rows: [][]sqltypes.Value{
+				{
+					sqltypes.MakeString([]byte("time_scheduled")),
+					sqltypes.MakeString([]byte("bigint(20)")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("0")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("id")),
+					sqltypes.MakeString([]byte("bigint(20)")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("0")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("time_next")),
+					sqltypes.MakeString([]byte("bigint(20)")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("0")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("epoch")),
+					sqltypes.MakeString([]byte("bigint(20)")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("0")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("time_created")),
+					sqltypes.MakeString([]byte("bigint(20)")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("0")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("time_acked")),
+					sqltypes.MakeString([]byte("bigint(20)")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("0")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("message")),
+					sqltypes.MakeString([]byte("bigint(20)")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("0")),
+					sqltypes.MakeString([]byte{}),
+				},
+			},
+		},
+		"show index from test_table": {
+			RowsAffected: 2,
+			Rows: [][]sqltypes.Value{
+				{
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("PRIMARY")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("time_scheduled")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("300")),
+				},
+				{
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("PRIMARY")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("id")),
 					sqltypes.MakeString([]byte{}),
 					sqltypes.MakeString([]byte("300")),
 				},

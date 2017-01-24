@@ -18,6 +18,7 @@ import (
 	"github.com/youtube/vitess/go/sqltypes"
 	"github.com/youtube/vitess/go/vt/callerid"
 	"github.com/youtube/vitess/go/vt/callinfo"
+	"github.com/youtube/vitess/go/vt/schema"
 	"github.com/youtube/vitess/go/vt/tableacl"
 	"github.com/youtube/vitess/go/vt/tableacl/simpleacl"
 	"github.com/youtube/vitess/go/vt/tabletserver/planbuilder"
@@ -158,6 +159,69 @@ func TestQueryExecutorPlanInsertPk(t *testing.T) {
 	}
 }
 
+func TestQueryExecutorPlanInsertMessage(t *testing.T) {
+	db := setUpQueryExecutorTest()
+	db.AddQueryPattern("insert into msg\\(time_scheduled, id, message, time_next, time_created, epoch\\) values \\(1, 2, 3, 1,.*", &sqltypes.Result{})
+	db.AddQuery(
+		"select time_next, epoch, id, message from msg where (time_scheduled = 1 and id = 2)",
+		&sqltypes.Result{
+			Rows: [][]sqltypes.Value{{
+				sqltypes.MakeString([]byte("1")),
+				sqltypes.MakeString([]byte("0")),
+				sqltypes.MakeString([]byte("1")),
+				sqltypes.MakeString([]byte("01")),
+			}},
+		},
+	)
+	want := &sqltypes.Result{
+		Rows: make([][]sqltypes.Value, 0),
+	}
+	query := "insert into msg(time_scheduled, id, message) values(1, 2, 3)"
+	ctx := context.Background()
+	tsv := newTestTabletServer(ctx, enableStrict, db)
+	qre := newTestQueryExecutor(ctx, tsv, query, 0)
+	defer tsv.StopService()
+	checkPlanID(t, planbuilder.PlanInsertMessage, qre.plan.PlanID)
+	r1 := newTestReceiver(1)
+	tsv.messager.schemaChanged(map[string]*TableInfo{
+		"msg": {
+			Table: &schema.Table{
+				Type: schema.Message,
+			},
+		},
+	})
+	tsv.messager.Subscribe("msg", r1.rcv)
+	<-r1.ch
+	got, err := qre.Execute()
+	if err != nil {
+		t.Fatalf("qre.Execute() = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got: %v, want: %v", got, want)
+	}
+	mr := <-r1.ch
+	wantqr := &sqltypes.Result{
+		Rows: [][]sqltypes.Value{{
+			sqltypes.MakeString([]byte("1")),
+			sqltypes.MakeString([]byte("01")),
+		}},
+	}
+	if !reflect.DeepEqual(mr, wantqr) {
+		t.Errorf("rows:\n%+v, want\n%+v", got, wantqr)
+	}
+
+	txid := newTransaction(tsv)
+	qre = newTestQueryExecutor(ctx, tsv, query, txid)
+	defer testCommitHelper(t, tsv, qre)
+	got, err = qre.Execute()
+	if err != nil {
+		t.Fatalf("qre.Execute() = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got: %v, want: %v", got, want)
+	}
+}
+
 func TestQueryExecutorPlanInsertSubQueryAutoCommmit(t *testing.T) {
 	db := setUpQueryExecutorTest()
 	query := "insert into test_table(pk) select pk from test_table where pk = 1 limit 1000"
@@ -265,10 +329,8 @@ func TestQueryExecutorPlanUpsertPk(t *testing.T) {
 	if err == nil || err.Error() != wantErr {
 		t.Errorf("qre.Execute() = %v, want %v", err, wantErr)
 	}
-	wantqueries = []string{}
-	gotqueries = fetchRecordedQueries(qre)
-	if !reflect.DeepEqual(gotqueries, wantqueries) {
-		t.Errorf("queries: %v, want %v", gotqueries, wantqueries)
+	if gotqueries = fetchRecordedQueries(qre); gotqueries != nil {
+		t.Errorf("queries: %v, want nil", gotqueries)
 	}
 	testCommitHelper(t, tsv, qre)
 
@@ -285,9 +347,8 @@ func TestQueryExecutorPlanUpsertPk(t *testing.T) {
 		t.Errorf("qre.Execute() = %v, want %v", err, wantErr)
 	}
 	wantqueries = []string{}
-	gotqueries = fetchRecordedQueries(qre)
-	if !reflect.DeepEqual(gotqueries, wantqueries) {
-		t.Errorf("queries: %v, want %v", gotqueries, wantqueries)
+	if gotqueries = fetchRecordedQueries(qre); gotqueries != nil {
+		t.Errorf("queries: %v, want nil", gotqueries)
 	}
 	testCommitHelper(t, tsv, qre)
 
@@ -403,6 +464,40 @@ func TestQueryExecutorPlanDmlPk(t *testing.T) {
 	}
 }
 
+func TestQueryExecutorPlanDmlMessage(t *testing.T) {
+	db := setUpQueryExecutorTest()
+	query := "update msg set time_acked = 2, time_next = null where id in (1)"
+	want := &sqltypes.Result{}
+	db.AddQuery("select time_scheduled, id from msg where id in (1) limit 10001 for update", &sqltypes.Result{
+		RowsAffected: 1,
+		Rows: [][]sqltypes.Value{{
+			sqltypes.MakeString([]byte("12")),
+			sqltypes.MakeString([]byte("1")),
+		}},
+	})
+	db.AddQuery("update msg set time_acked = 2, time_next = null where (time_scheduled = '12' and id = '1') /* _stream msg (time_scheduled id ) ('MTI=' 'MQ==' ); */", want)
+	ctx := context.Background()
+	tsv := newTestTabletServer(ctx, enableStrict, db)
+	txid := newTransaction(tsv)
+	qre := newTestQueryExecutor(ctx, tsv, query, txid)
+	defer tsv.StopService()
+	defer testCommitHelper(t, tsv, qre)
+	checkPlanID(t, planbuilder.PlanDMLSubquery, qre.plan.PlanID)
+	_, err := qre.Execute()
+	if err != nil {
+		t.Fatalf("qre.Execute() = %v, want nil", err)
+	}
+	conn, err := qre.te.txPool.Get(txid, "for test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantChanged := map[string][]string{"msg": {"1"}}
+	if !reflect.DeepEqual(conn.ChangedMessages, wantChanged) {
+		t.Errorf("conn.ChangedMessages: %+v, want: %+v", conn.ChangedMessages, wantChanged)
+	}
+	conn.Recycle()
+}
+
 func TestQueryExecutorPlanDmlAutoCommit(t *testing.T) {
 	db := setUpQueryExecutorTest()
 	query := "update test_table set name = 2 where pk in (1) /* _stream test_table (pk ) (1 ); */"
@@ -501,10 +596,8 @@ func TestQueryExecutorPlanOtherWithinATransaction(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got: %v, want: %v", got, want)
 	}
-	wantqueries := []string{}
-	gotqueries := fetchRecordedQueries(qre)
-	if !reflect.DeepEqual(gotqueries, wantqueries) {
-		t.Errorf("queries: %v, want %v", gotqueries, wantqueries)
+	if gotqueries := fetchRecordedQueries(qre); gotqueries != nil {
+		t.Errorf("queries: %v, want nil", gotqueries)
 	}
 }
 
@@ -539,10 +632,8 @@ func TestQueryExecutorPlanPassSelectWithInATransaction(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got: %v, want: %v", got, want)
 	}
-	wantqueries := []string{}
-	gotqueries := fetchRecordedQueries(qre)
-	if !reflect.DeepEqual(gotqueries, wantqueries) {
-		t.Errorf("queries: %v, want %v", gotqueries, wantqueries)
+	if gotqueries := fetchRecordedQueries(qre); gotqueries != nil {
+		t.Errorf("queries: %v, want nil", gotqueries)
 	}
 }
 
@@ -1216,6 +1307,7 @@ func newTestQueryExecutor(ctx context.Context, tsv *TabletServer, sql string, tx
 		logStats:      logStats,
 		qe:            tsv.qe,
 		te:            tsv.te,
+		messager:      tsv.messager,
 	}
 }
 
@@ -1315,6 +1407,17 @@ func getQueryExecutorSupportedQueries() map[string]*sqltypes.Result {
 					sqltypes.MakeString([]byte("USER TABLE")),
 					sqltypes.MakeTrusted(sqltypes.Int32, []byte("1427325875")),
 					sqltypes.MakeString([]byte("vitess_sequence")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("2")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("3")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("4")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("5")),
+				},
+				{
+					sqltypes.MakeString([]byte("msg")),
+					sqltypes.MakeString([]byte("USER TABLE")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("1427325875")),
+					sqltypes.MakeString([]byte("vitess_message,vt_ack_wait=30,vt_purge_after=120,vt_batch_size=1,vt_cache_size=10,vt_poller_interval=30")),
 					sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
 					sqltypes.MakeTrusted(sqltypes.Int32, []byte("2")),
 					sqltypes.MakeTrusted(sqltypes.Int32, []byte("3")),
@@ -1480,7 +1583,131 @@ func getQueryExecutorSupportedQueries() map[string]*sqltypes.Result {
 					sqltypes.MakeString([]byte("seq")),
 					sqltypes.MakeString([]byte("USER TABLE")),
 					sqltypes.MakeTrusted(sqltypes.Int32, []byte("1427325875")),
-					sqltypes.MakeString([]byte("")),
+					sqltypes.MakeString([]byte("vitess_sequence")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("2")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("3")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("4")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("5")),
+				},
+			},
+		},
+		"select * from msg where 1 != 1": {
+			Fields: []*querypb.Field{{
+				Name: "time_scheduled",
+				Type: sqltypes.Int32,
+			}, {
+				Name: "id",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "time_next",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "epoch",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "time_created",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "time_acked",
+				Type: sqltypes.Int64,
+			}, {
+				Name: "message",
+				Type: sqltypes.Int64,
+			}},
+		},
+		"describe msg": {
+			RowsAffected: 4,
+			Rows: [][]sqltypes.Value{
+				{
+					sqltypes.MakeString([]byte("time_scheduled")),
+					sqltypes.MakeString([]byte("int")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("1")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("id")),
+					sqltypes.MakeString([]byte("bigint")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("1")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("time_next")),
+					sqltypes.MakeString([]byte("bigint")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("1")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("epoch")),
+					sqltypes.MakeString([]byte("bigint")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("1")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("time_created")),
+					sqltypes.MakeString([]byte("bigint")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("1")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("time_acked")),
+					sqltypes.MakeString([]byte("bigint")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("1")),
+					sqltypes.MakeString([]byte{}),
+				},
+				{
+					sqltypes.MakeString([]byte("message")),
+					sqltypes.MakeString([]byte("bigint")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("1")),
+					sqltypes.MakeString([]byte{}),
+				},
+			},
+		},
+		"show index from msg": {
+			RowsAffected: 1,
+			Rows: [][]sqltypes.Value{
+				{
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("PRIMARY")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("time_scheduled")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("300")),
+				},
+				{
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("PRIMARY")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("id")),
+					sqltypes.MakeString([]byte{}),
+					sqltypes.MakeString([]byte("300")),
+				},
+			},
+		},
+		baseShowTables + " and table_name = 'msg'": {
+			RowsAffected: 1,
+			Rows: [][]sqltypes.Value{
+				{
+					sqltypes.MakeString([]byte("msg")),
+					sqltypes.MakeString([]byte("USER TABLE")),
+					sqltypes.MakeTrusted(sqltypes.Int32, []byte("1427325875")),
+					sqltypes.MakeString([]byte("vitess_message,vt_ack_wait=30,vt_purge_after=120,vt_batch_size=1,vt_cache_size=10,vt_poller_interval=30")),
 					sqltypes.MakeTrusted(sqltypes.Int32, []byte("1")),
 					sqltypes.MakeTrusted(sqltypes.Int32, []byte("2")),
 					sqltypes.MakeTrusted(sqltypes.Int32, []byte("3")),

@@ -698,6 +698,35 @@ func (f *fakeVTGateService) ResolveTransaction(ctx context.Context, dtid string)
 	return nil
 }
 
+func (f *fakeVTGateService) MessageStream(ctx context.Context, keyspace string, shard string, keyRange *topodatapb.KeyRange, name string, sendReply func(*sqltypes.Result) error) error {
+	if f.hasError {
+		return errTestVtGateError
+	}
+	if f.panics {
+		panic(fmt.Errorf("test forced panic"))
+	}
+	f.checkCallerID(ctx, "ResolveTransaction")
+	if name != messageName {
+		return errors.New("MessageStream name mismatch")
+	}
+	sendReply(messageStreamResult)
+	return nil
+}
+
+func (f *fakeVTGateService) MessageAck(ctx context.Context, keyspace string, name string, ids []*querypb.Value) (int64, error) {
+	if f.hasError {
+		return 0, errTestVtGateError
+	}
+	if f.panics {
+		panic(fmt.Errorf("test forced panic"))
+	}
+	f.checkCallerID(ctx, "ResolveTransaction")
+	if !reflect.DeepEqual(ids, messageids) {
+		return 0, errors.New("MessageAck ids mismatch")
+	}
+	return messageAckRowsAffected, nil
+}
+
 // querySplitQuery contains all the fields we use to test SplitQuery
 type querySplitQuery struct {
 	Keyspace            string
@@ -876,6 +905,8 @@ func TestSuite(t *testing.T, impl vtgateconn.Impl, fakeServer vtgateservice.VTGa
 	testTxPass(t, conn)
 	testResolveTransaction(t, conn)
 	testTxFail(t, conn)
+	testMessageStream(t, conn)
+	testMessageAck(t, conn)
 	testSplitQuery(t, conn)
 	testGetSrvKeyspace(t, conn)
 	testUpdateStream(t, conn)
@@ -897,6 +928,8 @@ func TestSuite(t *testing.T, impl vtgateconn.Impl, fakeServer vtgateservice.VTGa
 	testStreamExecuteShardsPanic(t, conn)
 	testStreamExecuteKeyRangesPanic(t, conn)
 	testStreamExecuteKeyspaceIdsPanic(t, conn)
+	testMessageStreamPanic(t, conn)
+	testMessageAckPanic(t, conn)
 	testSplitQueryPanic(t, conn)
 	testGetSrvKeyspacePanic(t, conn)
 	testUpdateStreamPanic(t, conn)
@@ -929,6 +962,8 @@ func TestErrorSuite(t *testing.T, fakeServer vtgateservice.VTGateService) {
 	testStreamExecuteShardsError(t, conn, fs)
 	testStreamExecuteKeyRangesError(t, conn, fs)
 	testStreamExecuteKeyspaceIdsError(t, conn, fs)
+	testMessageStreamError(t, conn)
+	testMessageAckError(t, conn)
 	testSplitQueryError(t, conn)
 	testGetSrvKeyspaceError(t, conn)
 	testUpdateStreamError(t, conn, fs)
@@ -1816,6 +1851,58 @@ func testTxFail(t *testing.T, conn *vtgateconn.VTGateConn) {
 	}
 }
 
+func testMessageStream(t *testing.T, conn *vtgateconn.VTGateConn) {
+	ctx := newContext()
+	err := conn.MessageStream(ctx, "", "", nil, messageName, func(qr *sqltypes.Result) error {
+		if !reflect.DeepEqual(qr, messageStreamResult) {
+			t.Errorf("reply: %v, want %v", qr, messageStreamResult)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func testMessageStreamError(t *testing.T, conn *vtgateconn.VTGateConn) {
+	ctx := newContext()
+	err := conn.MessageStream(ctx, "", "", nil, messageName, func(qr *sqltypes.Result) error {
+		return nil
+	})
+	verifyError(t, err, "MessageStream")
+}
+
+func testMessageStreamPanic(t *testing.T, conn *vtgateconn.VTGateConn) {
+	ctx := newContext()
+	err := conn.MessageStream(ctx, "", "", nil, messageName, func(qr *sqltypes.Result) error {
+		return nil
+	})
+	expectPanic(t, err)
+}
+
+func testMessageAck(t *testing.T, conn *vtgateconn.VTGateConn) {
+	ctx := newContext()
+	got, err := conn.MessageAck(ctx, "", messageName, messageids)
+	if got != messageAckRowsAffected {
+		t.Errorf("MessageAck: %d, want %d", got, messageAckRowsAffected)
+	}
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func testMessageAckError(t *testing.T, conn *vtgateconn.VTGateConn) {
+	ctx := newContext()
+	_, err := conn.MessageAck(ctx, "", messageName, messageids)
+	verifyError(t, err, "MessageAck")
+}
+
+func testMessageAckPanic(t *testing.T, conn *vtgateconn.VTGateConn) {
+	ctx := newContext()
+	_, err := conn.MessageAck(ctx, "", messageName, messageids)
+	expectPanic(t, err)
+}
+
 func testSplitQuery(t *testing.T, conn *vtgateconn.VTGateConn) {
 	ctx := newContext()
 	qsl, err := conn.SplitQuery(ctx,
@@ -2532,3 +2619,23 @@ var getSrvKeyspaceResult = &topodatapb.SrvKeyspace{
 		},
 	},
 }
+
+var messageName = "vitess_message"
+var messageStreamResult = &sqltypes.Result{
+	Fields: []*querypb.Field{{
+		Name: "id",
+		Type: sqltypes.VarBinary,
+	}, {
+		Name: "message",
+		Type: sqltypes.VarBinary,
+	}},
+	Rows: [][]sqltypes.Value{{
+		sqltypes.MakeTrusted(sqltypes.VarBinary, []byte("2")),
+		sqltypes.MakeTrusted(sqltypes.VarBinary, []byte("3")),
+	}},
+}
+var messageids = []*querypb.Value{
+	sqltypes.MakeString([]byte("1")).ToProtoValue(),
+	sqltypes.MakeString([]byte("3")).ToProtoValue(),
+}
+var messageAckRowsAffected = int64(1)

@@ -127,6 +127,7 @@ type VTGate struct {
 	logStreamExecuteKeyRanges   *logutil.ThrottledLogger
 	logStreamExecuteShards      *logutil.ThrottledLogger
 	logUpdateStream             *logutil.ThrottledLogger
+	logMessageStream            *logutil.ThrottledLogger
 }
 
 // RegisterVTGate defines the type of registration mechanism.
@@ -177,6 +178,7 @@ func Init(ctx context.Context, hc discovery.HealthCheck, topoServer topo.Server,
 		logStreamExecuteKeyRanges:   logutil.NewThrottledLogger("StreamExecuteKeyRanges", 5*time.Second),
 		logStreamExecuteShards:      logutil.NewThrottledLogger("StreamExecuteShards", 5*time.Second),
 		logUpdateStream:             logutil.NewThrottledLogger("UpdateStream", 5*time.Second),
+		logMessageStream:            logutil.NewThrottledLogger("MessageStream", 5*time.Second),
 	}
 
 	normalErrors = stats.NewMultiCounters("VtgateApiErrorCounts", []string{"Operation", "Keyspace", "DbType"})
@@ -804,6 +806,48 @@ func (vtg *VTGate) GetSrvKeyspace(ctx context.Context, keyspace string) (*topoda
 	return vtg.resolver.toposerv.GetSrvKeyspace(ctx, vtg.resolver.cell, keyspace)
 }
 
+// MessageStream is part of the vtgate service API. This is a V2 level API that's sent
+// to the Resolver.
+func (vtg *VTGate) MessageStream(ctx context.Context, keyspace string, shard string, keyRange *topodatapb.KeyRange, name string, sendReply func(*sqltypes.Result) error) error {
+	startTime := time.Now()
+	ltt := topoproto.TabletTypeLString(topodatapb.TabletType_MASTER)
+	statsKey := []string{"MessageStream", keyspace, ltt}
+	defer vtg.timings.Record(statsKey, startTime)
+
+	err := vtg.resolver.MessageStream(
+		ctx,
+		keyspace,
+		shard,
+		keyRange,
+		name,
+		sendReply,
+	)
+	if err != nil {
+		normalErrors.Add(statsKey, 1)
+		query := map[string]interface{}{
+			"Keyspace":    keyspace,
+			"Shard":       shard,
+			"KeyRange":    keyRange,
+			"TabletType":  ltt,
+			"MessageName": name,
+		}
+		logError(err, query, vtg.logMessageStream)
+	}
+	return formatError(err)
+}
+
+// MessageAck is part of the vtgate service API. This is a V3 level API that's sent
+// to the Router. The table name will be resolved using V3 rules, and the routing
+// will make use of vindexes for sharded keyspaces.
+func (vtg *VTGate) MessageAck(ctx context.Context, keyspace string, name string, ids []*querypb.Value) (int64, error) {
+	startTime := time.Now()
+	ltt := topoproto.TabletTypeLString(topodatapb.TabletType_MASTER)
+	statsKey := []string{"MessageAck", keyspace, ltt}
+	defer vtg.timings.Record(statsKey, startTime)
+	count, err := vtg.router.MessageAck(ctx, keyspace, name, ids)
+	return count, formatError(err)
+}
+
 // UpdateStream is part of the vtgate service API.
 func (vtg *VTGate) UpdateStream(ctx context.Context, keyspace string, shard string, keyRange *topodatapb.KeyRange, tabletType topodatapb.TabletType, timestamp int64, event *querypb.EventToken, sendReply func(*querypb.StreamEvent, int64) error) error {
 	startTime := time.Now()
@@ -920,6 +964,11 @@ func handleExecuteError(err error, statsKey []string, query map[string]interface
 	case vtrpcpb.ErrorCode_PERMISSION_DENIED:
 		// User violated permissions (TableACL), no need to log.
 		infoErrors.Add("PermissionDenied", 1)
+	case vtrpcpb.ErrorCode_TRANSIENT_ERROR:
+		// Temporary error which should be retried by user. Do not log.
+		// As of 01/2017, only the vttablet transaction throttler and the vtgate
+		// master buffer (if buffer full) return this error.
+		infoErrors.Add("TransientError", 1)
 	default:
 		// Regular error, we will log if caused by vtgate.
 		normalErrors.Add(statsKey, 1)
