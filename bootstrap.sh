@@ -137,8 +137,6 @@ gotools=" \
        honnef.co/go/unused/cmd/unused \
 "
 
-# Tools for uploading code coverage to coveralls.io (used by Travis CI).
-gotools+=" github.com/modocache/gover github.com/mattn/goveralls"
 # The cover tool needs to be installed into the Go toolchain, so it will fail
 # if Go is installed somewhere that requires root access.
 source tools/shell_functions.inc
@@ -255,7 +253,8 @@ echo "Installing selenium and chromedriver"
 selenium_dist=$VTROOT/dist/selenium
 mkdir -p $selenium_dist
 $VIRTUALENV $selenium_dist
-$selenium_dist/bin/$PIP install selenium
+PIP=$selenium_dist/bin/pip
+$PIP install selenium
 mkdir -p $VTROOT/dist/chromedriver
 curl -sL http://chromedriver.storage.googleapis.com/2.25/chromedriver_linux64.zip > chromedriver_linux64.zip
 unzip -o -q chromedriver_linux64.zip -d $VTROOT/dist/chromedriver

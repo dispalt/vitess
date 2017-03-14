@@ -33,15 +33,15 @@ import (
 	"github.com/youtube/vitess/go/stats"
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	"github.com/youtube/vitess/go/vt/tabletserver/queryservice"
-	"github.com/youtube/vitess/go/vt/tabletserver/tabletconn"
 	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
+	"github.com/youtube/vitess/go/vt/vttablet/tabletconn"
 	"golang.org/x/net/context"
 )
 
 var (
-	hcErrorCounters          = stats.NewMultiCounters("HealthcheckErrors", []string{"keyspace", "shardname", "tablettype"})
-	hcMasterPromotedCounters = stats.NewMultiCounters("HealthcheckMasterPromoted", []string{"keyspace", "shardname"})
+	hcErrorCounters          = stats.NewMultiCounters("HealthcheckErrors", []string{"Keyspace", "ShardName", "TabletType"})
+	hcMasterPromotedCounters = stats.NewMultiCounters("HealthcheckMasterPromoted", []string{"Keyspace", "ShardName"})
 )
 
 // See the documentation for NewHealthCheck below for an explanation of these parameters.
@@ -293,7 +293,7 @@ func NewHealthCheck(connTimeout, retryDelay, healthCheckTimeout time.Duration) H
 
 // RegisterStats registers the connection counts stats
 func (hc *HealthCheckImpl) RegisterStats() {
-	stats.NewMultiCountersFunc("HealthcheckConnections", []string{"keyspace", "shardname", "tablettype"}, hc.servingConnStats)
+	stats.NewMultiCountersFunc("HealthcheckConnections", []string{"Keyspace", "ShardName", "TabletType"}, hc.servingConnStats)
 }
 
 // servingConnStats returns the number of serving tablets per keyspace/shard/tablet type.
