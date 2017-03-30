@@ -4,8 +4,11 @@ import (
 	"fmt"
 
 	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"github.com/youtube/vitess/go/vt/vterrors"
 	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/querytypes"
+	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+
+	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
 )
 
 // FullScanAlgorithm implements the SplitAlgorithmInterface and represents the full-scan algorithm
@@ -48,8 +51,9 @@ func NewFullScanAlgorithm(
 	splitParams *SplitParams, sqlExecuter SQLExecuter) (*FullScanAlgorithm, error) {
 
 	if !splitParams.areSplitColumnsPrimaryKey() {
-		return nil, fmt.Errorf("Using the FULL_SCAN algorithm requires split columns to be"+
-			" the primary key. Got: %+v", splitParams)
+		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT,
+			"Using the FULL_SCAN algorithm requires split columns to be"+
+				" the primary key. Got: %+v", splitParams)
 	}
 	result := &FullScanAlgorithm{
 		splitParams:           splitParams,
@@ -73,14 +77,11 @@ func (a *FullScanAlgorithm) generateBoundaries() ([]tuple, error) {
 	}
 	result := make([]tuple, 0, a.splitParams.splitCount)
 	var iteration int64
-	// We have to allow for more than splitCount query-parts since we use an estimated
-	// tableSize in the equation 'numRowsPerQueryPart * splitCount = tableSize'.
-	maxIterations := 10 * a.splitParams.splitCount
+	// We used to have a safety check that makes sure the number of iterations does not
+	// exceed 10*a.splitParams.splitCount. The splitCount parameter was calculated from
+	// the estimated number of rows in the information schema, which could have been grossly
+	// inaccurate (more than 10 times too low).
 	for iteration = 0; prevTuple != nil; iteration++ {
-		if iteration > maxIterations {
-			panic(fmt.Sprintf("splitquery.FullScanAlgorithm.generateBoundaries(): didn't terminate"+
-				" after %v iterations (=10*splitCount). FullScanAlgorithm: %v", maxIterations, a))
-		}
 		result = append(result, prevTuple)
 		a.populatePrevTupleInBindVariables(prevTuple, a.noninitialQuery.BindVariables)
 		prevTuple, err = a.executeQuery(a.noninitialQuery)

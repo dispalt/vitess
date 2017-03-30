@@ -46,17 +46,13 @@ Our client will expect the server to always use mysql_native_password
 in its initial handshake. This is what a real server always does, even though
 it's not technically mandatory.
 
-Our server can then use the client's auth methods right away:
-- mysql_native_password
-- mysql_clear_password
-
-If our server's AuthServer UseClearText() returns true, and the
-client's auth method is not mysql_clear_password, we will
+The server's AuthServer plugin method AuthMethod() will then return
+what auth method the server wants to use. If it is
+mysql_native_password, and the client already returned the data, we
+use it. Otherwise we switch the auth to what the server wants (by
+sending an Authentication Method Switch Request packet) and
 re-negotiate.
 
-If any of these methods doesn't work for the server, it will re-negotiate
-by sending an Authentication Method Switch Request Packet.
-The client will then handle that if it can.
 --
 Maximum Packet Size:
 
@@ -116,5 +112,24 @@ some cases, so it's not a big deal).
 But eventually, we probably want to remove it entirely, as it is not
 transmitted over the wire. For now, we keep it for backward
 compatibility with the C client.
+
+--
+Row-based replication:
+
+The following types or constructs are not yet supported by our RBR:
+
+- in MariaDB, the type TIMESTAMP(N) where N>0 is stored in the row the
+  exact same way as TIMESTAMP(0). So there is no way to get N, except
+  by knowing the table exact schema. This is such a corner case. MySQL
+  5.6+ uses TIMESTAMP2, and uses metadata to know the precision, so it
+  works there very nicely.
+
+  From mariaDB source code comment:
+  'So row-based replication between temporal data types of
+  different precision is not possible in MariaDB.'
+
+- JSON is stored as an optimized index data blob in the row. We don't
+  parse it to re-print a text version for re-insertion. Instead, we
+  just return NULL. So JSOn is not supported.
 
 */

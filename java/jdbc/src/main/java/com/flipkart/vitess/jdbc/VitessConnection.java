@@ -3,7 +3,6 @@ package com.flipkart.vitess.jdbc;
 import com.flipkart.vitess.util.CommonUtils;
 import com.flipkart.vitess.util.Constants;
 import com.flipkart.vitess.util.MysqlDefs;
-import com.flipkart.vitess.util.charset.CharsetMapping;
 import com.youtube.vitess.client.Context;
 import com.youtube.vitess.client.VTGateConn;
 import com.youtube.vitess.client.VTGateTx;
@@ -215,11 +214,11 @@ public class VitessConnection extends ConnectionProperties implements Connection
 
     public DatabaseMetaData getMetaData() throws SQLException {
         checkOpen();
-        if (null != databaseMetaData) {
+        if (!metadataNullOrClosed()) {
             return databaseMetaData;
         } else {
             synchronized (VitessConnection.class) {
-                if (null == databaseMetaData) {
+                if (metadataNullOrClosed()) {
                     String dbEngine = initializeDBProperties();
                     if (dbEngine.equals("mariadb")) {
                         databaseMetaData = new VitessMariaDBDatabaseMetadata(this);
@@ -230,6 +229,10 @@ public class VitessConnection extends ConnectionProperties implements Connection
             }
             return databaseMetaData;
         }
+    }
+
+    private boolean metadataNullOrClosed() throws SQLException {
+        return null == databaseMetaData || null == databaseMetaData.getConnection() || databaseMetaData.getConnection().isClosed();
     }
 
     public boolean isReadOnly() throws SQLException {
@@ -786,18 +789,19 @@ public class VitessConnection extends ConnectionProperties implements Connection
         HashMap<String, String> dbVariables = new HashMap<>();
         String dbEngine = null;
 
-        if (null == databaseMetaData) {
+        if (metadataNullOrClosed()) {
             String versionValue;
             ResultSet resultSet = null;
             VitessStatement vitessStatement = new VitessStatement(this);
             try {
                 resultSet = vitessStatement.executeQuery(
-                    "SHOW VARIABLES WHERE VARIABLE_NAME IN (\'tx_isolation\',\'INNODB_VERSION\')");
+                    "SHOW VARIABLES WHERE VARIABLE_NAME IN (\'tx_isolation\',\'INNODB_VERSION\', \'lower_case_table_names\')");
                 while (resultSet.next()) {
                     dbVariables.put(resultSet.getString(1), resultSet.getString(2));
                 }
                 versionValue = dbVariables.get("innodb_version");
                 String transactionIsolation = dbVariables.get("tx_isolation");
+                String lowerCaseTables = dbVariables.get("lower_case_table_names");
                 String productVersion = "";
                 String majorVersion = "";
                 String minorVersion = "";
@@ -823,7 +827,7 @@ public class VitessConnection extends ConnectionProperties implements Connection
                     minorVersion = dbVersions[1];
                 }
                 this.dbProperties =
-                    new DBProperties(productVersion, majorVersion, minorVersion, isolationLevel);
+                    new DBProperties(productVersion, majorVersion, minorVersion, isolationLevel, lowerCaseTables);
             } finally {
                 if (null != resultSet) {
                     resultSet.close();
@@ -845,28 +849,5 @@ public class VitessConnection extends ConnectionProperties implements Connection
 
     public String getUsername() {
         return this.vitessJDBCUrl.getUsername();
-    }
-
-    public String getEncodingForIndex(int charsetIndex) {
-        String javaEncoding = null;
-        if (charsetIndex != MysqlDefs.NO_CHARSET_INFO) {
-            javaEncoding = CharsetMapping.getJavaEncodingForCollationIndex(charsetIndex, getEncoding());
-        }
-        // If nothing, get default based on configuration, may still be null
-        if (javaEncoding == null) {
-            javaEncoding = getEncoding();
-        }
-        return javaEncoding;
-    }
-
-    public int getMaxBytesPerChar(Integer charsetIndex, String javaCharsetName) {
-        // if we can get it by charsetIndex just doing it
-        String charset = CharsetMapping.getMysqlCharsetNameForCollationIndex(charsetIndex);
-        // if we didn't find charset name by its full name
-        if (charset == null) {
-            charset = CharsetMapping.getMysqlCharsetForJavaEncoding(javaCharsetName);
-        }
-        // checking against static maps
-        return CharsetMapping.getMblen(charset);
     }
 }

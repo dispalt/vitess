@@ -29,6 +29,11 @@ func analyzeUpdate(upd *sqlparser.Update, tables map[string]*schema.Table) (plan
 		return nil, err
 	}
 
+	// Store the WHERE clause as string for the hot row protection (txserializer).
+	buf := sqlparser.NewTrackedBuffer(nil)
+	buf.Myprintf("%v", upd.Where)
+	plan.WhereClause = buf.ParsedQuery()
+
 	if !table.HasPrimary() {
 		log.Warningf("no primary key for table %s", tableName)
 		plan.Reason = ReasonTableNoIndex
@@ -72,6 +77,11 @@ func analyzeDelete(del *sqlparser.Delete, tables map[string]*schema.Table) (plan
 	if err != nil {
 		return nil, err
 	}
+
+	// Store the WHERE clause as string for the hot row protection (txserializer).
+	buf := sqlparser.NewTrackedBuffer(nil)
+	buf.Myprintf("%v", del.Where)
+	plan.WhereClause = buf.ParsedQuery()
 
 	if !table.HasPrimary() {
 		log.Warningf("no primary key for table %s", tableName)
@@ -124,7 +134,7 @@ func analyzeSelect(sel *sqlparser.Select, tables map[string]*schema.Table) (plan
 	plan = &Plan{
 		PlanID:     PlanPassSelect,
 		FieldQuery: GenerateFieldQuery(sel),
-		FullQuery:  GenerateSelectLimitQuery(sel),
+		FullQuery:  GenerateLimitQuery(sel),
 	}
 	if sel.Lock != "" {
 		plan.PlanID = PlanSelectLock
@@ -280,7 +290,7 @@ func analyzeInsertNoType(ins *sqlparser.Insert, plan *Plan, table *schema.Table)
 		}
 		plan.PlanID = PlanInsertSubquery
 		plan.OuterQuery = GenerateInsertOuterQuery(ins)
-		plan.Subquery = GenerateSelectLimitQuery(sel)
+		plan.Subquery = GenerateLimitQuery(sel)
 		if len(ins.Columns) != 0 {
 			for _, col := range ins.Columns {
 				colIndex := table.FindColumn(col)

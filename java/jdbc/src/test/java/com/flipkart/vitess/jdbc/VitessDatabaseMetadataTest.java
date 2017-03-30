@@ -1,11 +1,13 @@
 package com.flipkart.vitess.jdbc;
 
-import com.flipkart.vitess.jdbc.*;
-import com.flipkart.vitess.util.Constants;
-import com.google.protobuf.ByteString;
-import com.youtube.vitess.client.cursor.Cursor;
-import com.youtube.vitess.client.cursor.SimpleCursor;
-import com.youtube.vitess.proto.Query;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Types;
+import java.util.ArrayList;
+import java.util.Properties;
+
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -13,14 +15,16 @@ import org.powermock.api.mockito.PowerMockito;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
 
-import java.sql.*;
-import java.util.ArrayList;
-import java.util.Properties;
+import com.flipkart.vitess.util.Constants;
+import com.google.protobuf.ByteString;
+import com.youtube.vitess.client.cursor.Cursor;
+import com.youtube.vitess.client.cursor.SimpleCursor;
+import com.youtube.vitess.proto.Query;
 
 /**
  * Created by ashudeep.sharma on 08/03/16.
  */
-@RunWith(PowerMockRunner.class) @PrepareForTest(VitessMySQLDatabaseMetadata.class) public class VitessDatabaseMetadataTest {
+@RunWith(PowerMockRunner.class) @PrepareForTest({VitessMySQLDatabaseMetadata.class, VitessConnection.class}) public class VitessDatabaseMetadataTest extends BaseTest {
 
     private ResultSet resultSet;
 
@@ -936,7 +940,38 @@ import java.util.Properties;
     @Test public void getTablesTest() throws SQLException, Exception {
 
         String sql = "SHOW FULL TABLES FROM `vt` LIKE '%'";
-        Cursor mockedCursor = new SimpleCursor(Query.QueryResult.newBuilder()
+        Cursor mockedCursor = getTablesCursor();
+
+        VitessStatement vitessStatement = PowerMockito.mock(VitessStatement.class);
+        PowerMockito.whenNew(VitessStatement.class).withAnyArguments().thenReturn(vitessStatement);
+        PowerMockito.when(vitessStatement.executeQuery(sql))
+            .thenReturn(new VitessResultSet(mockedCursor));
+
+        VitessDatabaseMetaData vitessDatabaseMetaData = new VitessMySQLDatabaseMetadata(getVitessConnection());
+        ResultSet actualResultSet = vitessDatabaseMetaData.getTables("vt", null, null, null);
+        ResultSet expectedResultSet = new VitessResultSet(mockedCursor);
+
+        assertResultSetEquals(actualResultSet, expectedResultSet);
+    }
+
+    @Test public void getTablesProperResultTypeTest() throws SQLException, Exception {
+
+        String sql = "SHOW FULL TABLES FROM `vt` LIKE '%'";
+        Cursor mockedCursor = getTablesCursor();
+
+        VitessStatement vitessStatement = PowerMockito.mock(VitessStatement.class);
+        PowerMockito.whenNew(VitessStatement.class).withAnyArguments().thenReturn(vitessStatement);
+        PowerMockito.when(vitessStatement.executeQuery(sql))
+            .thenReturn(new VitessResultSet(mockedCursor));
+
+        VitessDatabaseMetaData vitessDatabaseMetaData = new VitessMySQLDatabaseMetadata(getVitessConnection());
+        ResultSet actualResultSet = vitessDatabaseMetaData.getTables("vt", null, null, null);
+        actualResultSet.next();
+        Assert.assertEquals(String.class, actualResultSet.getObject("TABLE_CAT").getClass());
+    }
+
+    private Cursor getTablesCursor() throws Exception {
+        return new SimpleCursor(Query.QueryResult.newBuilder()
             .addFields(Query.Field.newBuilder().setName("TABLE_CAT").setType(Query.Type.VARCHAR))
             .addFields(Query.Field.newBuilder().setName("TABLE_SCHEM").setType(Query.Type.VARCHAR))
             .addFields(Query.Field.newBuilder().setName("TABLE_NAME").setType(Query.Type.VARCHAR))
@@ -974,17 +1009,6 @@ import java.util.Properties;
                 .addLengths("".length()).addLengths("".length()).addLengths("".length())
                 .setValues(ByteString.copyFromUtf8("TestDB2SampleLocalTemporaryLOCAL TEMPORARY")))
             .build());
-
-        VitessStatement vitessStatement = PowerMockito.mock(VitessStatement.class);
-        PowerMockito.whenNew(VitessStatement.class).withAnyArguments().thenReturn(vitessStatement);
-        PowerMockito.when(vitessStatement.executeQuery(sql))
-            .thenReturn(new VitessResultSet(mockedCursor));
-
-        VitessDatabaseMetaData vitessDatabaseMetaData = new VitessMySQLDatabaseMetadata(null);
-        ResultSet actualResultSet = vitessDatabaseMetaData.getTables("vt", null, null, null);
-        ResultSet expectedResultSet = new VitessResultSet(mockedCursor);
-
-        assertResultSetEquals(actualResultSet, expectedResultSet);
     }
 
     @Test public void getColumnsTest() throws SQLException, Exception {
@@ -1306,4 +1330,78 @@ import java.util.Properties;
         }
     }
 
+    @Test public void testCaseSensitivityIdentifierFuncsMySql() throws Exception {
+        assertCaseSensitivityForDatabaseType(false);
+    }
+
+    @Test public void testCaseSensitivityIdentifierFuncsMariaDb() throws Exception {
+        assertCaseSensitivityForDatabaseType(true);
+    }
+
+    private void assertCaseSensitivityForDatabaseType(boolean useMariaDb) throws Exception {
+        VitessConnection connection = new VitessConnection("jdbc:vitess://username@ip1:port1/keyspace", null);
+        mockStatementForLowercaseTablesValue("0", useMariaDb);
+        Assert.assertEquals(true, connection.getMetaData().supportsMixedCaseIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().supportsMixedCaseQuotedIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().storesLowerCaseIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().storesMixedCaseIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().storesLowerCaseQuotedIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().storesMixedCaseQuotedIdentifiers());
+        connection.close();
+
+        connection = new VitessConnection("jdbc:vitess://username@ip1:port1/keyspace", null);
+        mockStatementForLowercaseTablesValue("1", useMariaDb);
+        Assert.assertEquals(false, connection.getMetaData().supportsMixedCaseIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().supportsMixedCaseQuotedIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().storesLowerCaseIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().storesMixedCaseIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().storesLowerCaseQuotedIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().storesMixedCaseQuotedIdentifiers());
+        connection.close();
+
+        connection = new VitessConnection("jdbc:vitess://username@ip1:port1/keyspace", null);
+        mockStatementForLowercaseTablesValue("2", useMariaDb);
+        Assert.assertEquals(false, connection.getMetaData().supportsMixedCaseIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().supportsMixedCaseQuotedIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().storesLowerCaseIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().storesMixedCaseIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().storesLowerCaseQuotedIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().storesMixedCaseQuotedIdentifiers());
+        connection.close();
+
+        connection = new VitessConnection("jdbc:vitess://username@ip1:port1/keyspace", null);
+        mockStatementForLowercaseTablesValue("something random", useMariaDb);
+        Assert.assertEquals(true, connection.getMetaData().supportsMixedCaseIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().supportsMixedCaseQuotedIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().storesLowerCaseIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().storesMixedCaseIdentifiers());
+        Assert.assertEquals(false, connection.getMetaData().storesLowerCaseQuotedIdentifiers());
+        Assert.assertEquals(true, connection.getMetaData().storesMixedCaseQuotedIdentifiers());
+        connection.close();
+    }
+
+    private void mockStatementForLowercaseTablesValue(String lcTablesValue, boolean useMariaDb) throws Exception {
+        String sql = "SHOW VARIABLES WHERE VARIABLE_NAME IN (\'tx_isolation\',\'INNODB_VERSION\', \'lower_case_table_names\')";
+        String versionName = "innodb_version";
+        String versionValue = "5.7.16-10";
+        if (useMariaDb) {
+            versionValue = versionValue + "-mariadb";
+        }
+        String txIsoName = "tx_isolation";
+        String txIsoValue = "REPEATABLE-READ";
+        String lcTablesName = "lower_case_table_names";
+
+        Cursor mockedCursor = new SimpleCursor(Query.QueryResult.newBuilder()
+            .addFields(Query.Field.newBuilder().setName("Variable_name").setType(Query.Type.VARCHAR).build())
+            .addFields(Query.Field.newBuilder().setName("Value").setType(Query.Type.VARCHAR).build())
+            .addRows(Query.Row.newBuilder().addLengths(versionName.length()).addLengths(versionValue.length()).setValues(ByteString.copyFromUtf8(versionName + versionValue)))
+            .addRows(Query.Row.newBuilder().addLengths(txIsoName.length()).addLengths(txIsoValue.length()).setValues(ByteString.copyFromUtf8(txIsoName + txIsoValue)))
+            .addRows(Query.Row.newBuilder().addLengths(lcTablesName.length()).addLengths(lcTablesValue.length()).setValues(ByteString.copyFromUtf8(lcTablesName + lcTablesValue)))
+            .build());
+
+        VitessStatement vitessStatement = PowerMockito.mock(VitessStatement.class);
+        PowerMockito.whenNew(VitessStatement.class).withAnyArguments().thenReturn(vitessStatement);
+        PowerMockito.when(vitessStatement.executeQuery(sql))
+            .thenReturn(new VitessResultSet(mockedCursor));
+    }
 }
