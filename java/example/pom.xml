@@ -5,24 +5,24 @@
   <parent>
     <groupId>com.dispalt.vitess</groupId>
     <artifactId>vitess-parent</artifactId>
-    <version>1.1.0</version>
+    <version>1.2.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
   <artifactId>example</artifactId>
 
   <dependencies>
     <dependency>
-      <groupId>${parent.groupId}</groupId>
+      <groupId>${project.parent.groupId}</groupId>
       <artifactId>vitess-connector-java</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>${parent.groupId}</groupId>
+      <groupId>${project.parent.groupId}</groupId>
       <artifactId>client</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>${parent.groupId}</groupId>
+      <groupId>${project.parent.groupId}</groupId>
       <artifactId>grpc-client</artifactId>
       <version>${project.version}</version>
     </dependency>
