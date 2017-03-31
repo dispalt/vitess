@@ -4,13 +4,13 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <parent>
         <artifactId>vitess-parent</artifactId>
-        <groupId>com.youtube.vitess</groupId>
-        <version>1.1.0-SNAPSHOT</version>
+        <groupId>com.dispalt.vitess</groupId>
+        <version>1.1.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.flipkart.vitess</groupId>
+    <groupId>com.dispalt.vitess</groupId>
     <artifactId>vitess-connector-java</artifactId>
 
     <dependencies>
@@ -30,14 +30,14 @@
             <version>2.5</version>
         </dependency>
         <dependency>
-            <groupId>com.youtube.vitess</groupId>
+            <groupId>${parent.groupId}</groupId>
             <artifactId>client</artifactId>
-            <version>1.1.0-SNAPSHOT</version>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.youtube.vitess</groupId>
+            <groupId>${parent.groupId}</groupId>
             <artifactId>grpc-client</artifactId>
-            <version>1.1.0-SNAPSHOT</version>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
@@ -97,6 +97,17 @@
                         </configuration>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>2.10.3</version>
+                <configuration>
+                    <includeDependencySources>true</includeDependencySources>
+                    <dependencySourceIncludes>
+                        <dependencySourceInclude>${project.groupId}:grpc-client</dependencySourceInclude>
+                    </dependencySourceIncludes>
+                </configuration>
             </plugin>
         </plugins>
     </build>
