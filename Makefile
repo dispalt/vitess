@@ -40,6 +40,9 @@ endif
 	go build $(VT_GO_PARALLEL) -ldflags -s "$(tools/build_version_flags.sh)" ./go/...
 	go install $(VT_GO_PARALLEL) -ldflags -s "$(tools/build_version_flags.sh)" ./go/...
 
+parser:
+	make -C go/vt/sqlparser
+
 # To pass extra flags, run test.go manually.
 # For example: go run test.go -docker=false -- --extra-flag
 # For more info see: go run test.go -help
