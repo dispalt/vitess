@@ -2273,11 +2273,6 @@ func TestConfigChanges(t *testing.T) {
 		t.Errorf("tsv.qe.QueryCacheCap: %d, want %d", val, newSize)
 	}
 
-	tsv.SetStrictMode(false)
-	if val := tsv.qe.strictMode.Get(); val {
-		t.Errorf("tsv.qe.strictMode.Get: %d, want false", val)
-	}
-
 	tsv.SetAutoCommit(true)
 	if val := tsv.qe.autoCommit.Get(); !val {
 		t.Errorf("tsv.qe.autoCommit.Get: %d, want true", val)
@@ -2391,6 +2386,18 @@ func getSupportedQueries() map[string]*sqltypes.Result {
 			Rows: [][]sqltypes.Value{
 				{sqltypes.MakeString([]byte("1"))},
 			},
+		},
+		"show variables like 'binlog_format'": {
+			Fields: []*querypb.Field{{
+				Type: sqltypes.VarChar,
+			}, {
+				Type: sqltypes.VarChar,
+			}},
+			RowsAffected: 1,
+			Rows: [][]sqltypes.Value{{
+				sqltypes.MakeString([]byte("binlog_format")),
+				sqltypes.MakeString([]byte("STATEMENT")),
+			}},
 		},
 		"select * from test_table where 1 != 1": {
 			Fields: []*querypb.Field{{

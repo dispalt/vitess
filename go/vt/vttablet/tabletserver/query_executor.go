@@ -90,8 +90,8 @@ func (qre *QueryExecutor) Execute() (reply *sqltypes.Result, err error) {
 		defer conn.Recycle()
 		switch qre.plan.PlanID {
 		case planbuilder.PlanPassDML:
-			if qre.tsv.qe.strictMode.Get() {
-				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "DML too complex")
+			if qre.tsv.qe.binlogFormat != connpool.BinlogFormatRow {
+				return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "unsupported: cannot identify primary key of statement")
 			}
 			return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, false, true)
 		case planbuilder.PlanInsertPK:
@@ -168,8 +168,8 @@ func (qre *QueryExecutor) execDmlAutoCommit() (reply *sqltypes.Result, err error
 	return qre.execAsTransaction(func(conn *TxConnection) (reply *sqltypes.Result, err error) {
 		switch qre.plan.PlanID {
 		case planbuilder.PlanPassDML:
-			if qre.tsv.qe.strictMode.Get() {
-				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "DML too complex")
+			if qre.tsv.qe.binlogFormat != connpool.BinlogFormatRow {
+				return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "unsupported: cannot identify primary key of statement")
 			}
 			reply, err = qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, false, true)
 		case planbuilder.PlanInsertPK:
@@ -493,11 +493,21 @@ func (qre *QueryExecutor) execInsertSubquery(conn *TxConnection) (*sqltypes.Resu
 }
 
 func (qre *QueryExecutor) execInsertPKRows(conn *TxConnection, pkRows [][]sqltypes.Value) (*sqltypes.Result, error) {
-	bsc := buildStreamComment(qre.plan.Table, pkRows, nil)
+	var bsc []byte
+	// don't build comment for RBR.
+	if qre.tsv.qe.binlogFormat != connpool.BinlogFormatRow {
+		bsc = buildStreamComment(qre.plan.Table, pkRows, nil)
+	}
 	return qre.txFetch(conn, qre.plan.OuterQuery, qre.bindVars, bsc, false, true)
 }
 
 func (qre *QueryExecutor) execUpsertPK(conn *TxConnection) (*sqltypes.Result, error) {
+	// For RBR, upserts are passed through.
+	if qre.tsv.qe.binlogFormat == connpool.BinlogFormatRow {
+		return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, false, true)
+	}
+
+	// For statement or mixed mode, we have to split into two ops.
 	pkRows, err := buildValueList(qre.plan.Table, qre.plan.PKValues, qre.bindVars)
 	if err != nil {
 		return nil, err
@@ -568,7 +578,11 @@ func (qre *QueryExecutor) execDMLPKRows(conn *TxConnection, query *sqlparser.Par
 		if secondaryList != nil {
 			secondaryList = secondaryList[i:end]
 		}
-		bsc := buildStreamComment(qre.plan.Table, pkRows, secondaryList)
+		var bsc []byte
+		// Don't build comment for RBR.
+		if qre.tsv.qe.binlogFormat != connpool.BinlogFormatRow {
+			bsc = buildStreamComment(qre.plan.Table, pkRows, secondaryList)
+		}
 		qre.bindVars["#pk"] = sqlparser.TupleEqualityList{
 			Columns: qre.plan.Table.Indexes[0].Columns,
 			Rows:    pkRows,
