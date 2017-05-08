@@ -1,6 +1,18 @@
-// Copyright 2012, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package tabletserver
 
@@ -486,6 +498,8 @@ func (tsv *TabletServer) StopService() {
 	tsv.waitForShutdown()
 	tsv.qe.Close()
 	tsv.se.Close()
+	tsv.hw.Close()
+	tsv.hr.Close()
 	log.Infof("Shutdown complete.")
 	tsv.transition(StateNotConnected)
 }
@@ -498,8 +512,6 @@ func (tsv *TabletServer) waitForShutdown() {
 	// transactions.
 	tsv.txRequests.Wait()
 	tsv.messager.Close()
-	tsv.hr.Close()
-	tsv.hw.Close()
 	tsv.te.Close(false)
 	tsv.qe.streamQList.TerminateAll()
 	tsv.updateStreamList.Stop()
@@ -1337,7 +1349,7 @@ func (tsv *TabletServer) convertError(sql string, bindVariables map[string]inter
 	// If so, we don't want to suppress the error. This will allow VTGate to
 	// detect and perform buffering during failovers.
 	if tsv.TerseErrors && len(bindVariables) != 0 && errCode != vtrpcpb.Code_FAILED_PRECONDITION {
-		errstr = fmt.Sprintf("(errno %d) (sqlstate %s) during query: %s", errnum, sqlState, sql)
+		errstr = fmt.Sprintf("(errno %d) (sqlstate %s) during query: %s", errnum, sqlState, sqlparser.TruncateForLog(sql))
 	}
 	return vterrors.New(errCode, errstr)
 }

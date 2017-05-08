@@ -1,6 +1,18 @@
-// Copyright 2012, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package sqlparser
 
@@ -109,6 +121,7 @@ func (*Delete) iStatement() {}
 func (*Set) iStatement()    {}
 func (*DDL) iStatement()    {}
 func (*Show) iStatement()   {}
+func (*Use) iStatement()    {}
 func (*Other) iStatement()  {}
 
 // ParenSelect can actually not be a top level statement,
@@ -322,8 +335,15 @@ func (node *Union) WalkSubtree(visit Visit) error {
 	)
 }
 
-// Insert represents an INSERT statement.
+// Insert represents an INSERT or REPLACE statement.
+// Per the MySQL docs, http://dev.mysql.com/doc/refman/5.7/en/replace.html
+// Replace is the counterpart to `INSERT IGNORE`, and works exactly like a
+// normal INSERT except if the row exists. In that case it first deletes
+// the row and re-inserts with new values. For that reason we keep it as an Insert struct.
+// Replaces are currently disallowed in sharded schemas because
+// of the implications the deletion part may have on vindexes.
 type Insert struct {
+	Action   string
 	Comments Comments
 	Ignore   string
 	Table    *TableName
@@ -332,9 +352,16 @@ type Insert struct {
 	OnDup    OnDup
 }
 
+// DDL strings.
+const (
+	InsertStr  = "insert"
+	ReplaceStr = "replace"
+)
+
 // Format formats the node.
 func (node *Insert) Format(buf *TrackedBuffer) {
-	buf.Myprintf("insert %v%sinto %v%v %v%v",
+	buf.Myprintf("%s %v%sinto %v%v %v%v",
+		node.Action,
 		node.Comments, node.Ignore,
 		node.Table, node.Columns, node.Rows, node.OnDup)
 }
@@ -507,22 +534,37 @@ type Show struct {
 
 // The frollowing constants represent SHOW statements.
 const (
-	ShowDatabasesStr     = "show databases"
-	ShowKeyspacesStr     = "show vitess_keyspaces"
-	ShowShardsStr        = "show vitess_shards"
-	ShowTablesStr        = "show tables"
-	ShowVSchemaTablesStr = "show vschema_tables"
-	ShowUnsupportedStr   = "show unsupported"
+	ShowDatabasesStr     = "databases"
+	ShowKeyspacesStr     = "vitess_keyspaces"
+	ShowShardsStr        = "vitess_shards"
+	ShowTablesStr        = "tables"
+	ShowVSchemaTablesStr = "vschema_tables"
+	ShowUnsupportedStr   = "unsupported"
 )
 
 // Format formats the node.
 func (node *Show) Format(buf *TrackedBuffer) {
-	buf.Myprintf("%s", node.Type)
+	buf.Myprintf("show %s", node.Type)
 }
 
 // WalkSubtree walks the nodes of the subtree.
 func (node *Show) WalkSubtree(visit Visit) error {
 	return nil
+}
+
+// Use represents a use statement.
+type Use struct {
+	DBName TableIdent
+}
+
+// Format formats the node.
+func (node *Use) Format(buf *TrackedBuffer) {
+	buf.Myprintf("use %v", node.DBName)
+}
+
+// WalkSubtree walks the nodes of the subtree.
+func (node *Use) WalkSubtree(visit Visit) error {
+	return Walk(visit, node.DBName)
 }
 
 // Other represents a DESCRIBE, or EXPLAIN statement.

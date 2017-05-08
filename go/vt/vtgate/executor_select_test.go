@@ -1,6 +1,18 @@
-// Copyright 2014, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package vtgate
 
@@ -23,10 +35,28 @@ import (
 	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
 )
 
-func TestUnsharded(t *testing.T) {
-	router, _, _, sbclookup := createRouterEnv()
+func TestSelectNext(t *testing.T) {
+	executor, _, _, sbclookup := createExecutorEnv()
 
-	_, err := routerExec(router, "select id from music_user_map where id = 1", nil)
+	query := "select next :n values from user_seq"
+	bv := map[string]interface{}{"n": 2}
+	_, err := executorExec(executor, query, bv)
+	if err != nil {
+		t.Error(err)
+	}
+	wantQueries := []querytypes.BoundQuery{{
+		Sql:           query,
+		BindVariables: bv,
+	}}
+	if !reflect.DeepEqual(sbclookup.Queries, wantQueries) {
+		t.Errorf("sbclookup.Queries: %+v, want %+v\n", sbclookup.Queries, wantQueries)
+	}
+}
+
+func TestUnsharded(t *testing.T) {
+	executor, _, _, sbclookup := createExecutorEnv()
+
+	_, err := executorExec(executor, "select id from music_user_map where id = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -38,7 +68,7 @@ func TestUnsharded(t *testing.T) {
 		t.Errorf("sbclookup.Queries: %+v, want %+v\n", sbclookup.Queries, wantQueries)
 	}
 
-	_, err = routerExec(router, "update music_user_map set id = 1", nil)
+	_, err = executorExec(executor, "update music_user_map set id = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -54,7 +84,7 @@ func TestUnsharded(t *testing.T) {
 	}
 
 	sbclookup.Queries = nil
-	_, err = routerExec(router, "delete from music_user_map", nil)
+	_, err = executorExec(executor, "delete from music_user_map", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -67,7 +97,7 @@ func TestUnsharded(t *testing.T) {
 	}
 
 	sbclookup.Queries = nil
-	_, err = routerExec(router, "insert into music_user_map values (1)", nil)
+	_, err = executorExec(executor, "insert into music_user_map values (1)", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -81,9 +111,9 @@ func TestUnsharded(t *testing.T) {
 }
 
 func TestUnshardedComments(t *testing.T) {
-	router, _, _, sbclookup := createRouterEnv()
+	executor, _, _, sbclookup := createExecutorEnv()
 
-	_, err := routerExec(router, "select id from music_user_map where id = 1 /* trailing */", nil)
+	_, err := executorExec(executor, "select id from music_user_map where id = 1 /* trailing */", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -95,7 +125,7 @@ func TestUnshardedComments(t *testing.T) {
 		t.Errorf("sbclookup.Queries: %+v, want %+v\n", sbclookup.Queries, wantQueries)
 	}
 
-	_, err = routerExec(router, "update music_user_map set id = 1 /* trailing */", nil)
+	_, err = executorExec(executor, "update music_user_map set id = 1 /* trailing */", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -111,7 +141,7 @@ func TestUnshardedComments(t *testing.T) {
 	}
 
 	sbclookup.Queries = nil
-	_, err = routerExec(router, "delete from music_user_map /* trailing */", nil)
+	_, err = executorExec(executor, "delete from music_user_map /* trailing */", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -124,7 +154,7 @@ func TestUnshardedComments(t *testing.T) {
 	}
 
 	sbclookup.Queries = nil
-	_, err = routerExec(router, "insert into music_user_map values (1) /* trailing */", nil)
+	_, err = executorExec(executor, "insert into music_user_map values (1) /* trailing */", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -138,59 +168,35 @@ func TestUnshardedComments(t *testing.T) {
 }
 
 func TestStreamUnsharded(t *testing.T) {
-	router, _, _, _ := createRouterEnv()
+	executor, _, _, _ := createExecutorEnv()
 
 	sql := "select id from music_user_map where id = 1"
-	result, err := routerStream(router, sql)
+	result, err := executorStream(executor, sql)
 	if err != nil {
 		t.Error(err)
 	}
 	wantResult := sandboxconn.SingleRowResult
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
-func TestUnshardedFail(t *testing.T) {
-	router, _, _, _ := createRouterEnv()
+func TestShardFail(t *testing.T) {
+	executor, _, _, _ := createExecutorEnv()
 
 	getSandbox(KsTestUnsharded).SrvKeyspaceMustFail = 1
-	_, err := routerExec(router, "select id from music_user_map where id = 1", nil)
-	want := "paramsUnsharded: keyspace TestUnsharded fetch error: topo error GetSrvKeyspace"
-	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
-	}
 
-	_, err = routerExec(router, "select id from sharded_table where id = 1", nil)
-	want = "unsharded keyspace TestBadSharding has multiple shards"
+	_, err := executorExec(executor, "select id from sharded_table where id = 1", nil)
+	want := "paramsAllShards: unsharded keyspace TestBadSharding has multiple shards: possible cause: sharded keyspace is marked as unsharded in vschema"
 	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
-	}
-}
-
-func TestStreamUnshardedFail(t *testing.T) {
-	router, _, _, _ := createRouterEnv()
-
-	getSandbox(KsTestUnsharded).SrvKeyspaceMustFail = 1
-	sql := "select id from music_user_map where id = 1"
-	_, err := routerStream(router, sql)
-	want := "paramsUnsharded: keyspace TestUnsharded fetch error: topo error GetSrvKeyspace"
-	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
-	}
-
-	sql = "update music_user_map set a = 1 where id = 1"
-	_, err = routerStream(router, sql)
-	want = `query "update music_user_map set a = 1 where id = 1" cannot be used for streaming`
-	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: \n%v, want \n%v", err, want)
+		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 }
 
 func TestSelectBindvars(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
+	executor, sbc1, sbc2, _ := createExecutorEnv()
 
-	_, err := routerExec(router, "select id from user where id = :id", map[string]interface{}{
+	_, err := executorExec(executor, "select id from user where id = :id", map[string]interface{}{
 		"id": 1,
 	})
 	if err != nil {
@@ -208,7 +214,7 @@ func TestSelectBindvars(t *testing.T) {
 	}
 	sbc1.Queries = nil
 
-	_, err = routerExec(router, "select id from user where name in (:name1, :name2)", map[string]interface{}{
+	_, err = executorExec(executor, "select id from user where name in (:name1, :name2)", map[string]interface{}{
 		"name1": "foo1",
 		"name2": "foo2",
 	})
@@ -228,7 +234,7 @@ func TestSelectBindvars(t *testing.T) {
 	}
 	sbc1.Queries = nil
 
-	_, err = routerExec(router, "select id from user where name in (:name1, :name2)", map[string]interface{}{
+	_, err = executorExec(executor, "select id from user where name in (:name1, :name2)", map[string]interface{}{
 		"name1": []byte("foo1"),
 		"name2": []byte("foo2"),
 	})
@@ -249,9 +255,9 @@ func TestSelectBindvars(t *testing.T) {
 }
 
 func TestSelectEqual(t *testing.T) {
-	router, sbc1, sbc2, sbclookup := createRouterEnv()
+	executor, sbc1, sbc2, sbclookup := createExecutorEnv()
 
-	_, err := routerExec(router, "select id from user where id = 1", nil)
+	_, err := executorExec(executor, "select id from user where id = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -267,7 +273,7 @@ func TestSelectEqual(t *testing.T) {
 	}
 	sbc1.Queries = nil
 
-	_, err = routerExec(router, "select id from user where id = 3", nil)
+	_, err = executorExec(executor, "select id from user where id = 3", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -286,7 +292,7 @@ func TestSelectEqual(t *testing.T) {
 	}
 	sbc2.Queries = nil
 
-	_, err = routerExec(router, "select id from user where id = '3'", nil)
+	_, err = executorExec(executor, "select id from user where id = '3'", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -305,7 +311,7 @@ func TestSelectEqual(t *testing.T) {
 	}
 	sbc2.Queries = nil
 
-	_, err = routerExec(router, "select id from user where name = 'foo'", nil)
+	_, err = executorExec(executor, "select id from user where name = 'foo'", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -328,9 +334,9 @@ func TestSelectEqual(t *testing.T) {
 }
 
 func TestSelectComments(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
+	executor, sbc1, sbc2, _ := createExecutorEnv()
 
-	_, err := routerExec(router, "select id from user where id = 1 /* trailing */", nil)
+	_, err := executorExec(executor, "select id from user where id = 1 /* trailing */", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -348,9 +354,9 @@ func TestSelectComments(t *testing.T) {
 }
 
 func TestSelectCaseSensitivity(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
+	executor, sbc1, sbc2, _ := createExecutorEnv()
 
-	_, err := routerExec(router, "select Id from user where iD = 1", nil)
+	_, err := executorExec(executor, "select Id from user where iD = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -368,102 +374,102 @@ func TestSelectCaseSensitivity(t *testing.T) {
 }
 
 func TestSelectEqualNotFound(t *testing.T) {
-	router, _, _, sbclookup := createRouterEnv()
+	executor, _, _, sbclookup := createExecutorEnv()
 
 	sbclookup.SetResults([]*sqltypes.Result{{}})
-	result, err := routerExec(router, "select id from music where id = 1", nil)
+	result, err := executorExec(executor, "select id from music where id = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
 	wantResult := &sqltypes.Result{}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 
 	sbclookup.SetResults([]*sqltypes.Result{{}})
-	result, err = routerExec(router, "select id from user where name = 'foo'", nil)
+	result, err = executorExec(executor, "select id from user where name = 'foo'", nil)
 	if err != nil {
 		t.Error(err)
 	}
 	wantResult = &sqltypes.Result{}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestStreamSelectEqual(t *testing.T) {
-	router, _, _, _ := createRouterEnv()
+	executor, _, _, _ := createExecutorEnv()
 
 	sql := "select id from user where id = 1"
-	result, err := routerStream(router, sql)
+	result, err := executorStream(executor, sql)
 	if err != nil {
 		t.Error(err)
 	}
 	wantResult := sandboxconn.SingleRowResult
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestSelectEqualFail(t *testing.T) {
-	router, _, _, sbclookup := createRouterEnv()
-	s := getSandbox("TestRouter")
+	executor, _, _, sbclookup := createExecutorEnv()
+	s := getSandbox("TestExecutor")
 
-	_, err := routerExec(router, "select id from user where id = (select count(*) from music)", nil)
+	_, err := executorExec(executor, "select id from user where id = (select count(*) from music)", nil)
 	want := "unsupported"
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("routerExec: %v, must start with %v", err, want)
+		t.Errorf("executorExec: %v, must start with %v", err, want)
 	}
 
-	_, err = routerExec(router, "select id from user where id = :aa", nil)
+	_, err = executorExec(executor, "select id from user where id = :aa", nil)
 	want = "paramsSelectEqual: could not find bind var :aa"
 	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
+		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 
 	s.SrvKeyspaceMustFail = 1
-	_, err = routerExec(router, "select id from user where id = 1", nil)
-	want = "paramsSelectEqual: keyspace TestRouter fetch error: topo error GetSrvKeyspace"
+	_, err = executorExec(executor, "select id from user where id = 1", nil)
+	want = "paramsSelectEqual: keyspace TestExecutor fetch error: topo error GetSrvKeyspace"
 	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
+		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 
 	sbclookup.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = routerExec(router, "select id from music where id = 1", nil)
+	_, err = executorExec(executor, "select id from music where id = 1", nil)
 	want = "paramsSelectEqual: lookup.Map"
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("routerExec: %v, want prefix %v", err, want)
+		t.Errorf("executorExec: %v, want prefix %v", err, want)
 	}
 
 	s.ShardSpec = "80-"
-	_, err = routerExec(router, "select id from user where id = 1", nil)
+	_, err = executorExec(executor, "select id from user where id = 1", nil)
 	want = "paramsSelectEqual: KeyspaceId 166b40b44aba4bd6 didn't match any shards"
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("routerExec: %v, want prefix %v", err, want)
+		t.Errorf("executorExec: %v, want prefix %v", err, want)
 	}
 	s.ShardSpec = DefaultShardSpec
 
 	sbclookup.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = routerExec(router, "select id from user where name = 'foo'", nil)
+	_, err = executorExec(executor, "select id from user where name = 'foo'", nil)
 	want = "paramsSelectEqual: lookup.Map"
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("routerExec: %v, want prefix %v", err, want)
+		t.Errorf("executorExec: %v, want prefix %v", err, want)
 	}
 
 	s.ShardSpec = "80-"
-	_, err = routerExec(router, "select id from user where name = 'foo'", nil)
+	_, err = executorExec(executor, "select id from user where name = 'foo'", nil)
 	want = "paramsSelectEqual: KeyspaceId 166b40b44aba4bd6 didn't match any shards"
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("routerExec: %v, want prefix %v", err, want)
+		t.Errorf("executorExec: %v, want prefix %v", err, want)
 	}
 	s.ShardSpec = DefaultShardSpec
 }
 
 func TestSelectIN(t *testing.T) {
-	router, sbc1, sbc2, sbclookup := createRouterEnv()
+	executor, sbc1, sbc2, sbclookup := createExecutorEnv()
 
 	// Constant in IN is just a number, not a bind variable.
-	_, err := routerExec(router, "select id from user where id in (1)", nil)
+	_, err := executorExec(executor, "select id from user where id in (1)", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -484,7 +490,7 @@ func TestSelectIN(t *testing.T) {
 	// They result in two different queries on two shards.
 	sbc1.Queries = nil
 	sbc2.Queries = nil
-	_, err = routerExec(router, "select id from user where id in (1, 3)", nil)
+	_, err = executorExec(executor, "select id from user where id in (1, 3)", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -511,7 +517,7 @@ func TestSelectIN(t *testing.T) {
 	// This is using an []interface{} for the bind variable list.
 	sbc1.Queries = nil
 	sbc2.Queries = nil
-	_, err = routerExec(router, "select id from user where id in ::vals", map[string]interface{}{
+	_, err = executorExec(executor, "select id from user where id in ::vals", map[string]interface{}{
 		"vals": []interface{}{int64(1), int64(3)},
 	})
 	if err != nil {
@@ -542,7 +548,7 @@ func TestSelectIN(t *testing.T) {
 	// We use a BindVariable with TUPLE type.
 	sbc1.Queries = nil
 	sbc2.Queries = nil
-	_, err = routerExec(router, "select id from user where id in ::vals", map[string]interface{}{
+	_, err = executorExec(executor, "select id from user where id in ::vals", map[string]interface{}{
 		"vals": &querypb.BindVariable{
 			Type: querypb.Type_TUPLE,
 			Values: []*querypb.Value{
@@ -612,7 +618,7 @@ func TestSelectIN(t *testing.T) {
 	// Convert a non-list bind variable.
 	sbc1.Queries = nil
 	sbc2.Queries = nil
-	_, err = routerExec(router, "select id from user where name = 'foo'", nil)
+	_, err = executorExec(executor, "select id from user where name = 'foo'", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -635,20 +641,20 @@ func TestSelectIN(t *testing.T) {
 }
 
 func TestStreamSelectIN(t *testing.T) {
-	router, _, _, sbclookup := createRouterEnv()
+	executor, _, _, sbclookup := createExecutorEnv()
 
 	sql := "select id from user where id in (1)"
-	result, err := routerStream(router, sql)
+	result, err := executorStream(executor, sql)
 	if err != nil {
 		t.Error(err)
 	}
 	wantResult := sandboxconn.SingleRowResult
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 
 	sql = "select id from user where id in (1, 3)"
-	result, err = routerStream(router, sql)
+	result, err = executorStream(executor, sql)
 	if err != nil {
 		t.Error(err)
 	}
@@ -660,17 +666,17 @@ func TestStreamSelectIN(t *testing.T) {
 		},
 		RowsAffected: 2,
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 
 	sql = "select id from user where name = 'foo'"
-	result, err = routerStream(router, sql)
+	result, err = executorStream(executor, sql)
 	if err != nil {
 		t.Error(err)
 	}
 	wantResult = sandboxconn.SingleRowResult
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 
@@ -686,54 +692,54 @@ func TestStreamSelectIN(t *testing.T) {
 }
 
 func TestSelectINFail(t *testing.T) {
-	router, _, _, _ := createRouterEnv()
+	executor, _, _, _ := createExecutorEnv()
 
-	_, err := routerExec(router, "select id from user where id in (:aa)", nil)
+	_, err := executorExec(executor, "select id from user where id in (:aa)", nil)
 	want := "paramsSelectIN: could not find bind var :aa"
 	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
+		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 
-	_, err = routerExec(router, "select id from user where id in ::aa", nil)
+	_, err = executorExec(executor, "select id from user where id in ::aa", nil)
 	want = "paramsSelectIN: could not find bind var ::aa"
 	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
+		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 
-	_, err = routerExec(router, "select id from user where id in ::aa", map[string]interface{}{
+	_, err = executorExec(executor, "select id from user where id in ::aa", map[string]interface{}{
 		"aa": 1,
 	})
 	want = "paramsSelectIN: expecting list for bind var ::aa: 1"
 	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
+		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 
-	getSandbox("TestRouter").SrvKeyspaceMustFail = 1
-	_, err = routerExec(router, "select id from user where id in (1)", nil)
-	want = "paramsSelectEqual: keyspace TestRouter fetch error: topo error GetSrvKeyspace"
+	getSandbox("TestExecutor").SrvKeyspaceMustFail = 1
+	_, err = executorExec(executor, "select id from user where id in (1)", nil)
+	want = "paramsSelectEqual: keyspace TestExecutor fetch error: topo error GetSrvKeyspace"
 	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
+		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 }
 
 func TestSelectScatter(t *testing.T) {
-	// Special setup: Don't use createRouterEnv.
+	// Special setup: Don't use createExecutorEnv.
 	cell := "aa"
 	hc := discovery.NewFakeHealthCheck()
-	s := createSandbox("TestRouter")
-	s.VSchema = routerVSchema
+	s := createSandbox("TestExecutor")
+	s.VSchema = executorVSchema
 	getSandbox(KsTestUnsharded).VSchema = unshardedVSchema
 	serv := new(sandboxTopo)
-	scatterConn := newTestScatterConn(hc, serv, cell)
+	resolver := newTestResolver(hc, serv, cell)
 	shards := []string{"-20", "20-40", "40-60", "60-80", "80-a0", "a0-c0", "c0-e0", "e0-"}
 	var conns []*sandboxconn.SandboxConn
 	for _, shard := range shards {
-		sbc := hc.AddTestTablet(cell, shard, 1, "TestRouter", shard, topodatapb.TabletType_MASTER, true, 1, nil)
+		sbc := hc.AddTestTablet(cell, shard, 1, "TestExecutor", shard, topodatapb.TabletType_MASTER, true, 1, nil)
 		conns = append(conns, sbc)
 	}
-	router := NewRouter(context.Background(), serv, cell, "", scatterConn, false)
+	executor := NewExecutor(context.Background(), serv, cell, "", resolver, false)
 
-	_, err := routerExec(router, "select id from user", nil)
+	_, err := executorExec(executor, "select id from user", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -749,24 +755,24 @@ func TestSelectScatter(t *testing.T) {
 }
 
 func TestStreamSelectScatter(t *testing.T) {
-	// Special setup: Don't use createRouterEnv.
+	// Special setup: Don't use createExecutorEnv.
 	cell := "aa"
 	hc := discovery.NewFakeHealthCheck()
-	s := createSandbox("TestRouter")
-	s.VSchema = routerVSchema
+	s := createSandbox("TestExecutor")
+	s.VSchema = executorVSchema
 	getSandbox(KsTestUnsharded).VSchema = unshardedVSchema
 	serv := new(sandboxTopo)
-	scatterConn := newTestScatterConn(hc, serv, cell)
+	resolver := newTestResolver(hc, serv, cell)
 	shards := []string{"-20", "20-40", "40-60", "60-80", "80-a0", "a0-c0", "c0-e0", "e0-"}
 	var conns []*sandboxconn.SandboxConn
 	for _, shard := range shards {
-		sbc := hc.AddTestTablet(cell, shard, 1, "TestRouter", shard, topodatapb.TabletType_MASTER, true, 1, nil)
+		sbc := hc.AddTestTablet(cell, shard, 1, "TestExecutor", shard, topodatapb.TabletType_MASTER, true, 1, nil)
 		conns = append(conns, sbc)
 	}
-	router := NewRouter(context.Background(), serv, cell, "", scatterConn, false)
+	executor := NewExecutor(context.Background(), serv, cell, "", resolver, false)
 
 	sql := "select id from user"
-	result, err := routerStream(router, sql)
+	result, err := executorStream(executor, sql)
 	if err != nil {
 		t.Error(err)
 	}
@@ -784,41 +790,41 @@ func TestStreamSelectScatter(t *testing.T) {
 		},
 		RowsAffected: 8,
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestSelectScatterFail(t *testing.T) {
-	// Special setup: Don't use createRouterEnv.
+	// Special setup: Don't use createExecutorEnv.
 	cell := "aa"
 	hc := discovery.NewFakeHealthCheck()
-	s := createSandbox("TestRouter")
-	s.VSchema = routerVSchema
+	s := createSandbox("TestExecutor")
+	s.VSchema = executorVSchema
 	getSandbox(KsTestUnsharded).VSchema = unshardedVSchema
 	s.SrvKeyspaceMustFail = 1
 	shards := []string{"-20", "20-40", "40-60", "60-80", "80-a0", "a0-c0", "c0-e0", "e0-"}
 	var conns []*sandboxconn.SandboxConn
 	for _, shard := range shards {
-		sbc := hc.AddTestTablet(cell, shard, 1, "TestRouter", shard, topodatapb.TabletType_MASTER, true, 1, nil)
+		sbc := hc.AddTestTablet(cell, shard, 1, "TestExecutor", shard, topodatapb.TabletType_MASTER, true, 1, nil)
 		conns = append(conns, sbc)
 	}
 	serv := new(sandboxTopo)
-	scatterConn := newTestScatterConn(hc, serv, cell)
-	router := NewRouter(context.Background(), serv, cell, "", scatterConn, false)
+	resolver := newTestResolver(hc, serv, cell)
+	executor := NewExecutor(context.Background(), serv, cell, "", resolver, false)
 
-	_, err := routerExec(router, "select id from user", nil)
-	want := "paramsSelectScatter: keyspace TestRouter fetch error: topo error GetSrvKeyspace"
+	_, err := executorExec(executor, "select id from user", nil)
+	want := "paramsAllShards: keyspace TestExecutor fetch error: topo error GetSrvKeyspace"
 	if err == nil || err.Error() != want {
-		t.Errorf("routerExec: %v, want %v", err, want)
+		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 }
 
 // TODO(sougou): stream and non-stream testing are very similar.
 // Could reuse code,
 func TestSimpleJoin(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
-	result, err := routerExec(router, "select u1.id, u2.id from user u1 join user u2 where u1.id = 1 and u2.id = 3", nil)
+	executor, sbc1, sbc2, _ := createExecutorEnv()
+	result, err := executorExec(executor, "select u1.id, u2.id from user u1 join user u2 where u1.id = 1 and u2.id = 3", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -849,13 +855,13 @@ func TestSimpleJoin(t *testing.T) {
 		},
 		RowsAffected: 1,
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 func TestJoinComments(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
-	_, err := routerExec(router, "select u1.id, u2.id from user u1 join user u2 where u1.id = 1 and u2.id = 3 /* trailing */", nil)
+	executor, sbc1, sbc2, _ := createExecutorEnv()
+	_, err := executorExec(executor, "select u1.id, u2.id from user u1 join user u2 where u1.id = 1 and u2.id = 3 /* trailing */", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -876,8 +882,8 @@ func TestJoinComments(t *testing.T) {
 }
 
 func TestSimpleJoinStream(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
-	result, err := routerStream(router, "select u1.id, u2.id from user u1 join user u2 where u1.id = 1 and u2.id = 3")
+	executor, sbc1, sbc2, _ := createExecutorEnv()
+	result, err := executorStream(executor, "select u1.id, u2.id from user u1 join user u2 where u1.id = 1 and u2.id = 3")
 	if err != nil {
 		t.Error(err)
 	}
@@ -908,13 +914,13 @@ func TestSimpleJoinStream(t *testing.T) {
 		},
 		RowsAffected: 0,
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestVarJoin(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
+	executor, sbc1, sbc2, _ := createExecutorEnv()
 	result1 := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
 			{Name: "id", Type: sqltypes.Int32},
@@ -928,7 +934,7 @@ func TestVarJoin(t *testing.T) {
 		}},
 	}}
 	sbc1.SetResults(result1)
-	_, err := routerExec(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
+	_, err := executorExec(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -952,7 +958,7 @@ func TestVarJoin(t *testing.T) {
 }
 
 func TestVarJoinStream(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
+	executor, sbc1, sbc2, _ := createExecutorEnv()
 	result1 := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
 			{Name: "id", Type: sqltypes.Int32},
@@ -966,7 +972,7 @@ func TestVarJoinStream(t *testing.T) {
 		}},
 	}}
 	sbc1.SetResults(result1)
-	_, err := routerStream(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1")
+	_, err := executorStream(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1")
 	if err != nil {
 		t.Error(err)
 	}
@@ -990,7 +996,7 @@ func TestVarJoinStream(t *testing.T) {
 }
 
 func TestLeftJoin(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
+	executor, sbc1, sbc2, _ := createExecutorEnv()
 	result1 := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
 			{Name: "id", Type: sqltypes.Int32},
@@ -1010,7 +1016,7 @@ func TestLeftJoin(t *testing.T) {
 	}}
 	sbc1.SetResults(result1)
 	sbc2.SetResults(emptyResult)
-	result, err := routerExec(router, "select u1.id, u2.id from user u1 left join user u2 on u2.id = u1.col where u1.id = 1", nil)
+	result, err := executorExec(executor, "select u1.id, u2.id from user u1 left join user u2 on u2.id = u1.col where u1.id = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -1027,13 +1033,13 @@ func TestLeftJoin(t *testing.T) {
 		},
 		RowsAffected: 1,
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestLeftJoinStream(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
+	executor, sbc1, sbc2, _ := createExecutorEnv()
 	result1 := []*sqltypes.Result{{
 		Fields: []*querypb.Field{
 			{Name: "id", Type: sqltypes.Int32},
@@ -1053,7 +1059,7 @@ func TestLeftJoinStream(t *testing.T) {
 	}}
 	sbc1.SetResults(result1)
 	sbc2.SetResults(emptyResult)
-	result, err := routerStream(router, "select u1.id, u2.id from user u1 left join user u2 on u2.id = u1.col where u1.id = 1")
+	result, err := executorStream(executor, "select u1.id, u2.id from user u1 left join user u2 on u2.id = u1.col where u1.id = 1")
 	if err != nil {
 		t.Error(err)
 	}
@@ -1070,13 +1076,13 @@ func TestLeftJoinStream(t *testing.T) {
 		},
 		RowsAffected: 0,
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestEmptyJoin(t *testing.T) {
-	router, sbc1, _, _ := createRouterEnv()
+	executor, sbc1, _, _ := createExecutorEnv()
 	// Empty result requires a field query for the second part of join,
 	// which is sent to shard 0.
 	sbc1.SetResults([]*sqltypes.Result{{
@@ -1088,7 +1094,7 @@ func TestEmptyJoin(t *testing.T) {
 			{Name: "id", Type: sqltypes.Int32},
 		},
 	}})
-	result, err := routerExec(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
+	result, err := executorExec(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -1110,13 +1116,13 @@ func TestEmptyJoin(t *testing.T) {
 			{Name: "id", Type: sqltypes.Int32},
 		},
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestEmptyJoinStream(t *testing.T) {
-	router, sbc1, _, _ := createRouterEnv()
+	executor, sbc1, _, _ := createExecutorEnv()
 	// Empty result requires a field query for the second part of join,
 	// which is sent to shard 0.
 	sbc1.SetResults([]*sqltypes.Result{{
@@ -1128,7 +1134,7 @@ func TestEmptyJoinStream(t *testing.T) {
 			{Name: "id", Type: sqltypes.Int32},
 		},
 	}})
-	result, err := routerStream(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1")
+	result, err := executorStream(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1")
 	if err != nil {
 		t.Error(err)
 	}
@@ -1150,13 +1156,13 @@ func TestEmptyJoinStream(t *testing.T) {
 			{Name: "id", Type: sqltypes.Int32},
 		},
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestEmptyJoinRecursive(t *testing.T) {
-	router, sbc1, _, _ := createRouterEnv()
+	executor, sbc1, _, _ := createExecutorEnv()
 	// Make sure it also works recursively.
 	sbc1.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
@@ -1172,7 +1178,7 @@ func TestEmptyJoinRecursive(t *testing.T) {
 			{Name: "id", Type: sqltypes.Int32},
 		},
 	}})
-	result, err := routerExec(router, "select u1.id, u2.id, u3.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 1", nil)
+	result, err := executorExec(executor, "select u1.id, u2.id, u3.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 1", nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -1198,13 +1204,13 @@ func TestEmptyJoinRecursive(t *testing.T) {
 			{Name: "id", Type: sqltypes.Int32},
 		},
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestEmptyJoinRecursiveStream(t *testing.T) {
-	router, sbc1, _, _ := createRouterEnv()
+	executor, sbc1, _, _ := createExecutorEnv()
 	// Make sure it also works recursively.
 	sbc1.SetResults([]*sqltypes.Result{{
 		Fields: []*querypb.Field{
@@ -1220,7 +1226,7 @@ func TestEmptyJoinRecursiveStream(t *testing.T) {
 			{Name: "id", Type: sqltypes.Int32},
 		},
 	}})
-	result, err := routerStream(router, "select u1.id, u2.id, u3.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 1")
+	result, err := executorStream(executor, "select u1.id, u2.id, u3.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 1")
 	if err != nil {
 		t.Error(err)
 	}
@@ -1246,17 +1252,17 @@ func TestEmptyJoinRecursiveStream(t *testing.T) {
 			{Name: "id", Type: sqltypes.Int32},
 		},
 	}
-	if !reflect.DeepEqual(result, wantResult) {
+	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
 	}
 }
 
 func TestJoinErrors(t *testing.T) {
-	router, sbc1, sbc2, _ := createRouterEnv()
+	executor, sbc1, sbc2, _ := createExecutorEnv()
 
 	// First query fails
 	sbc1.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err := routerExec(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
+	_, err := executorExec(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
 	want := "INVALID_ARGUMENT error"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("err: %v, must contain %s", err, want)
@@ -1269,7 +1275,7 @@ func TestJoinErrors(t *testing.T) {
 		},
 	}})
 	sbc1.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = routerExec(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 3", nil)
+	_, err = executorExec(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 3", nil)
 	want = "INVALID_ARGUMENT error"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("err: %v, must contain %s", err, want)
@@ -1287,7 +1293,7 @@ func TestJoinErrors(t *testing.T) {
 		}},
 	}})
 	sbc2.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = routerExec(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
+	_, err = executorExec(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
 	want = "INVALID_ARGUMENT error"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("err: %v, must contain %s", err, want)
@@ -1301,7 +1307,7 @@ func TestJoinErrors(t *testing.T) {
 		},
 	}})
 	sbc1.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = routerExec(router, "select u1.id, u2.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 3", nil)
+	_, err = executorExec(executor, "select u1.id, u2.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 3", nil)
 	want = "INVALID_ARGUMENT error"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("err: %v, must contain %s", err, want)
@@ -1314,7 +1320,7 @@ func TestJoinErrors(t *testing.T) {
 		},
 	}})
 	sbc1.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = routerStream(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 3")
+	_, err = executorStream(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 3")
 	want = "INVALID_ARGUMENT error"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("err: %v, must contain %s", err, want)
@@ -1332,7 +1338,7 @@ func TestJoinErrors(t *testing.T) {
 		}},
 	}})
 	sbc2.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = routerStream(router, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1")
+	_, err = executorStream(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1")
 	want = "INVALID_ARGUMENT error"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("err: %v, must contain %s", err, want)

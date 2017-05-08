@@ -1,3 +1,19 @@
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreedto in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package vtgate
 
 import (
@@ -15,7 +31,6 @@ import (
 	"github.com/youtube/vitess/go/vt/servenv"
 
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
 	"github.com/youtube/vitess/go/vt/servenv/grpcutils"
 )
@@ -50,10 +65,7 @@ func (vh *vtgateHandler) ConnectionClosed(c *mysqlconn.Conn) {
 	// Rollback if there is an ongoing transaction. Ignore error.
 	ctx := context.Background()
 	session, _ := c.ClientData.(*vtgatepb.Session)
-	if session == nil || !session.InTransaction {
-		return
-	}
-	_, _, _ = vh.vtg.Execute(ctx, "rollback", make(map[string]interface{}), "", topodatapb.TabletType_MASTER, session, false, &querypb.ExecuteOptions{})
+	_, _, _ = vh.vtg.Execute(ctx, session, "rollback", make(map[string]interface{}))
 }
 
 func (vh *vtgateHandler) ComQuery(c *mysqlconn.Conn, query string) (*sqltypes.Result, error) {
@@ -73,9 +85,17 @@ func (vh *vtgateHandler) ComQuery(c *mysqlconn.Conn, query string) (*sqltypes.Re
 	ctx = callerid.NewContext(ctx, ef, im)
 
 	session, _ := c.ClientData.(*vtgatepb.Session)
-	session, result, err := vh.vtg.Execute(ctx, query, make(map[string]interface{}), c.SchemaName, topodatapb.TabletType_MASTER, session, false /* notInTransaction */, &querypb.ExecuteOptions{
-		IncludedFields: querypb.ExecuteOptions_ALL,
-	})
+	if session == nil {
+		session = &vtgatepb.Session{
+			Options: &querypb.ExecuteOptions{
+				IncludedFields: querypb.ExecuteOptions_ALL,
+			},
+		}
+	}
+	if c.SchemaName != "" {
+		session.TargetString = c.SchemaName
+	}
+	session, result, err := vh.vtg.Execute(ctx, session, query, make(map[string]interface{}))
 	c.ClientData = session
 	return result, sqldb.NewSQLErrorFromError(err)
 }

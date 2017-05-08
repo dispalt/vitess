@@ -1,6 +1,18 @@
-// Copyright 2012, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 %{
 package sqlparser
@@ -137,9 +149,9 @@ func forceEOF(yylex interface{}) {
 %type <selStmt> select_statement base_select union_lhs union_rhs
 %type <statement> insert_statement update_statement delete_statement set_statement
 %type <statement> create_statement alter_statement rename_statement drop_statement
-%type <statement> analyze_statement show_statement other_statement
+%type <statement> analyze_statement show_statement use_statement other_statement
 %type <bytes2> comment_opt comment_list
-%type <str> union_op
+%type <str> union_op insert_or_replace
 %type <str> distinct_opt straight_join_opt cache_opt match_option separator_opt
 %type <expr> like_escape_opt
 %type <selectExprs> select_expression_list select_expression_list_opt
@@ -222,6 +234,7 @@ command:
 | drop_statement
 | analyze_statement
 | show_statement
+| use_statement
 | other_statement
 
 select_statement:
@@ -271,17 +284,18 @@ union_rhs:
 
 
 insert_statement:
-  INSERT comment_opt ignore_opt into_table_name insert_data on_dup_opt
+  insert_or_replace comment_opt ignore_opt into_table_name insert_data on_dup_opt
   {
     // insert_data returns a *Insert pre-filled with Columns & Values
     ins := $5
+    ins.Action = $1
     ins.Comments = $2
     ins.Ignore = $3
     ins.Table = $4
     ins.OnDup = OnDup($6)
     $$ = ins
   }
-| INSERT comment_opt ignore_opt into_table_name SET update_list on_dup_opt
+| insert_or_replace comment_opt ignore_opt into_table_name SET update_list on_dup_opt
   {
     cols := make(Columns, 0, len($6))
     vals := make(ValTuple, 0, len($7))
@@ -289,7 +303,17 @@ insert_statement:
       cols = append(cols, updateList.Name.Name)
       vals = append(vals, updateList.Expr)
     }
-    $$ = &Insert{Comments: Comments($2), Ignore: $3, Table: $4, Columns: cols, Rows: Values{vals}, OnDup: OnDup($7)}
+    $$ = &Insert{Action: $1, Comments: Comments($2), Ignore: $3, Table: $4, Columns: cols, Rows: Values{vals}, OnDup: OnDup($7)}
+  }
+
+insert_or_replace:
+  INSERT
+  {
+    $$ = InsertStr
+  }
+| REPLACE
+  {
+    $$ = ReplaceStr
   }
 
 update_statement:
@@ -391,17 +415,10 @@ show_statement_type:
   }
 | reserved_keyword
   {
-    if (string($1) == "databases"){
-      $$ = ShowDatabasesStr
-    } else if (string($1) == "tables"){
-      $$ = ShowTablesStr
-    } else if (string($1) == "vitess_keyspaces"){
-      $$ = ShowKeyspacesStr
-    } else if (string($1) == "vitess_shards"){
-      $$ = ShowShardsStr
-    } else if (string($1) == "vschema_tables"){
-      $$ = ShowVSchemaTablesStr
-    } else {
+    switch v := string($1); v {
+    case ShowDatabasesStr, ShowTablesStr, ShowKeyspacesStr, ShowShardsStr, ShowVSchemaTablesStr:
+      $$ = v
+    default:
       $$ = ShowUnsupportedStr
     }
   }
@@ -411,10 +428,16 @@ show_statement_type:
 }
 
 show_statement:
-SHOW show_statement_type force_eof
-{
-  $$ = &Show{Type: $2}
-}
+  SHOW show_statement_type force_eof
+  {
+    $$ = &Show{Type: $2}
+  }
+
+use_statement:
+  USE table_id
+  {
+    $$ = &Use{DBName: $2}
+  }
 
 other_statement:
   DESCRIBE force_eof

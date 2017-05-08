@@ -1,6 +1,18 @@
-// Copyright 2016, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package planbuilder
 
@@ -101,9 +113,15 @@ func (rb *route) Leftmost() *route {
 // Join joins with the RHS. This could produce a merged route
 // or a new join node.
 func (rb *route) Join(rhs builder, ajoin *sqlparser.JoinTableExpr) (builder, error) {
+	if rb.ERoute.Opcode == engine.SelectNext {
+		return nil, errors.New("unsupported: sequence join with another table")
+	}
 	rRoute, ok := rhs.(*route)
 	if !ok {
 		return newJoin(rb, rhs, ajoin)
+	}
+	if rRoute.ERoute.Opcode == engine.SelectNext {
+		return nil, errors.New("unsupported: sequence join with another table")
 	}
 	if rb.ERoute.Keyspace.Name != rRoute.ERoute.Keyspace.Name {
 		return newJoin(rb, rRoute, ajoin)
@@ -356,8 +374,9 @@ func (rb *route) PushSelect(expr *sqlparser.NonStarExpr, _ *route) (colsym *cols
 	return colsym, len(rb.Colsyms) - 1, nil
 }
 
-// PushStar pushes the '*' expression into the route.
-func (rb *route) PushStar(expr *sqlparser.StarExpr) *colsym {
+// PushAnonymous pushes an anonymous expression like '*' or NEXT VALUES
+// into the select expression list of the route.
+func (rb *route) PushAnonymous(expr sqlparser.SelectExpr) *colsym {
 	// We just create a place-holder colsym. It won't
 	// match anything.
 	colsym := newColsym(rb, rb.Symtab())
@@ -525,7 +544,7 @@ func (rb *route) SupplyVar(from, to int, col *sqlparser.ColName, varname string)
 	panic("unreachable")
 }
 
-// SupplyCol changes the router to supply the requested column
+// SupplyCol changes the executor to supply the requested column
 // name, and returns the result column number. If the column
 // is already in the list, it's reused.
 func (rb *route) SupplyCol(ref colref) int {
@@ -551,5 +570,11 @@ func (rb *route) SupplyCol(ref colref) int {
 
 // IsSingle returns true if the route targets only one database.
 func (rb *route) IsSingle() bool {
-	return rb.ERoute.Opcode == engine.SelectUnsharded || rb.ERoute.Opcode == engine.SelectEqualUnique
+	switch rb.ERoute.Opcode {
+	// Even thought SelectNext is a single-shard query, we don't
+	// include it here because it can't be combined with any other construct.
+	case engine.SelectUnsharded, engine.SelectEqualUnique:
+		return true
+	}
+	return false
 }

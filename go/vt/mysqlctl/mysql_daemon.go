@@ -1,6 +1,18 @@
-// Copyright 2012, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package mysqlctl
 
@@ -52,6 +64,9 @@ type MysqlDaemon interface {
 	SetSlavePositionCommands(pos replication.Position) ([]string, error)
 	SetMasterCommands(masterHost string, masterPort int) ([]string, error)
 	WaitForReparentJournal(ctx context.Context, timeCreatedNS int64) error
+
+	// Used for backup restoration, to ensure we have a clean slate
+	ResetSlaveCommands() ([]string, error)
 
 	// DemoteMaster waits for all current transactions to finish,
 	// and returns the current replication position. It will not
@@ -122,6 +137,12 @@ type FakeMysqlDaemon struct {
 
 	// ResetReplicationError is returned by ResetReplication
 	ResetReplicationError error
+
+	// ResetSlaveResult is returned by ResetSlave
+	ResetSlaveResult []string
+
+	// ResetSlaveError is returned by ResetSlave
+	ResetSlaveError error
 
 	// CurrentMasterPosition is returned by MasterPosition
 	// and SlaveStatus
@@ -292,6 +313,11 @@ func (fmd *FakeMysqlDaemon) SlaveStatus() (Status, error) {
 // ResetReplicationCommands is part of the MysqlDaemon interface
 func (fmd *FakeMysqlDaemon) ResetReplicationCommands() ([]string, error) {
 	return fmd.ResetReplicationResult, fmd.ResetReplicationError
+}
+
+// ResetSlaveCommands is part of the MysqlDaemon interface
+func (fmd *FakeMysqlDaemon) ResetSlaveCommands() ([]string, error) {
+	return fmd.ResetSlaveResult, fmd.ResetSlaveError
 }
 
 // MasterPosition is part of the MysqlDaemon interface

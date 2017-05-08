@@ -1,6 +1,18 @@
-// Copyright 2015, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 // Package grpcvtgateservice provides the gRPC glue for vtgate
 package grpcvtgateservice
@@ -16,6 +28,7 @@ import (
 	"github.com/youtube/vitess/go/vt/callerid"
 	"github.com/youtube/vitess/go/vt/callinfo"
 	"github.com/youtube/vitess/go/vt/servenv"
+	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"github.com/youtube/vitess/go/vt/vterrors"
 	"github.com/youtube/vitess/go/vt/vtgate"
 	"github.com/youtube/vitess/go/vt/vtgate/vtgateservice"
@@ -23,6 +36,7 @@ import (
 	"golang.org/x/net/context"
 
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
 	vtgateservicepb "github.com/youtube/vitess/go/vt/proto/vtgateservice"
 	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
@@ -91,12 +105,84 @@ func (vtg *VTGate) Execute(ctx context.Context, request *vtgatepb.ExecuteRequest
 	if err != nil {
 		return nil, vterrors.ToGRPC(err)
 	}
-	session, result, err := vtg.server.Execute(ctx, string(request.Query.Sql), bv, request.KeyspaceShard, request.TabletType, request.Session, request.NotInTransaction, request.Options)
+	// Handle backward compatibility.
+	session := request.Session
+	if session == nil {
+		session = &vtgatepb.Session{}
+	}
+	if session.TargetString == "" && request.TabletType != topodatapb.TabletType_UNKNOWN {
+		session.TargetString = request.KeyspaceShard + "@" + topoproto.TabletTypeLString(request.TabletType)
+	}
+	if session.Options == nil {
+		session.Options = request.Options
+	}
+	session, result, err := vtg.server.Execute(ctx, session, string(request.Query.Sql), bv)
 	return &vtgatepb.ExecuteResponse{
 		Result:  sqltypes.ResultToProto3(result),
 		Session: session,
 		Error:   vterrors.ToVTRPC(err),
 	}, nil
+}
+
+// ExecuteBatch is the RPC version of vtgateservice.VTGateService method
+func (vtg *VTGate) ExecuteBatch(ctx context.Context, request *vtgatepb.ExecuteBatchRequest) (response *vtgatepb.ExecuteBatchResponse, err error) {
+	defer vtg.server.HandlePanic(&err)
+	ctx = withCallerIDContext(ctx, request.CallerId)
+	results := make([]sqltypes.QueryResponse, len(request.Queries))
+	sqlQueries := make([]string, len(request.Queries))
+	bindVars := make([]map[string]interface{}, len(request.Queries))
+	for queryNum, query := range request.Queries {
+		bv, err := querytypes.Proto3ToBindVariables(query.BindVariables)
+		if err != nil {
+			return nil, vterrors.ToGRPC(err)
+		}
+		sqlQueries[queryNum] = query.Sql
+		bindVars[queryNum] = bv
+	}
+	// Handle backward compatibility.
+	session := request.Session
+	if session == nil {
+		session = &vtgatepb.Session{}
+	}
+	if session.TargetString == "" {
+		session.TargetString = request.KeyspaceShard + "@" + topoproto.TabletTypeLString(request.TabletType)
+	}
+	if session.Options == nil {
+		session.Options = request.Options
+	}
+	session, results, err = vtg.server.ExecuteBatch(ctx, session, sqlQueries, bindVars)
+	return &vtgatepb.ExecuteBatchResponse{
+		Results: sqltypes.QueryResponsesToProto3(results),
+		Session: session,
+		Error:   vterrors.ToVTRPC(err),
+	}, nil
+}
+
+// StreamExecute is the RPC version of vtgateservice.VTGateService method
+func (vtg *VTGate) StreamExecute(request *vtgatepb.StreamExecuteRequest, stream vtgateservicepb.Vitess_StreamExecuteServer) (err error) {
+	defer vtg.server.HandlePanic(&err)
+	ctx := withCallerIDContext(stream.Context(), request.CallerId)
+	bv, err := querytypes.Proto3ToBindVariables(request.Query.BindVariables)
+	if err != nil {
+		return vterrors.ToGRPC(err)
+	}
+	// Handle backward compatibility.
+	session := request.Session
+	if session == nil {
+		session = &vtgatepb.Session{}
+	}
+	if session.TargetString == "" {
+		session.TargetString = request.KeyspaceShard + "@" + topoproto.TabletTypeLString(request.TabletType)
+	}
+	if session.Options == nil {
+		session.Options = request.Options
+	}
+	vtgErr := vtg.server.StreamExecute(ctx, session, string(request.Query.Sql), bv, func(value *sqltypes.Result) error {
+		return stream.Send(&vtgatepb.StreamExecuteResponse{
+			Result: sqltypes.ResultToProto3(value),
+		})
+	})
+	return vterrors.ToGRPC(vtgErr)
 }
 
 // ExecuteShards is the RPC version of vtgateservice.VTGateService method
@@ -196,29 +282,6 @@ func (vtg *VTGate) ExecuteEntityIds(ctx context.Context, request *vtgatepb.Execu
 	}, nil
 }
 
-// ExecuteBatch is the RPC version of vtgateservice.VTGateService method
-func (vtg *VTGate) ExecuteBatch(ctx context.Context, request *vtgatepb.ExecuteBatchRequest) (response *vtgatepb.ExecuteBatchResponse, err error) {
-	defer vtg.server.HandlePanic(&err)
-	ctx = withCallerIDContext(ctx, request.CallerId)
-	results := make([]sqltypes.QueryResponse, len(request.Queries))
-	sqlQueries := make([]string, len(request.Queries))
-	bindVars := make([]map[string]interface{}, len(request.Queries))
-	for queryNum, query := range request.Queries {
-		bv, err := querytypes.Proto3ToBindVariables(query.BindVariables)
-		if err != nil {
-			return nil, vterrors.ToGRPC(err)
-		}
-		sqlQueries[queryNum] = query.Sql
-		bindVars[queryNum] = bv
-	}
-	session, results, err := vtg.server.ExecuteBatch(ctx, sqlQueries, bindVars, request.KeyspaceShard, request.TabletType, request.Session, request.Options)
-	return &vtgatepb.ExecuteBatchResponse{
-		Results: sqltypes.QueryResponsesToProto3(results),
-		Session: session,
-		Error:   vterrors.ToVTRPC(err),
-	}, nil
-}
-
 // ExecuteBatchShards is the RPC version of vtgateservice.VTGateService method
 func (vtg *VTGate) ExecuteBatchShards(ctx context.Context, request *vtgatepb.ExecuteBatchShardsRequest) (response *vtgatepb.ExecuteBatchShardsResponse, err error) {
 	defer vtg.server.HandlePanic(&err)
@@ -252,28 +315,6 @@ func (vtg *VTGate) ExecuteBatchKeyspaceIds(ctx context.Context, request *vtgatep
 		Session: request.Session,
 		Error:   vterrors.ToVTRPC(err),
 	}, nil
-}
-
-// StreamExecute is the RPC version of vtgateservice.VTGateService method
-func (vtg *VTGate) StreamExecute(request *vtgatepb.StreamExecuteRequest, stream vtgateservicepb.Vitess_StreamExecuteServer) (err error) {
-	defer vtg.server.HandlePanic(&err)
-	ctx := withCallerIDContext(stream.Context(), request.CallerId)
-	bv, err := querytypes.Proto3ToBindVariables(request.Query.BindVariables)
-	if err != nil {
-		return vterrors.ToGRPC(err)
-	}
-	vtgErr := vtg.server.StreamExecute(ctx,
-		string(request.Query.Sql),
-		bv,
-		request.KeyspaceShard,
-		request.TabletType,
-		request.Options,
-		func(value *sqltypes.Result) error {
-			return stream.Send(&vtgatepb.StreamExecuteResponse{
-				Result: sqltypes.ResultToProto3(value),
-			})
-		})
-	return vterrors.ToGRPC(vtgErr)
 }
 
 // StreamExecuteShards is the RPC version of vtgateservice.VTGateService method

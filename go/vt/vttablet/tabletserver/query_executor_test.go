@@ -1,6 +1,18 @@
-// Copyright 2015, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package tabletserver
 
@@ -118,6 +130,42 @@ func TestQueryExecutorPlanPassDmlAutoCommitRBR(t *testing.T) {
 	if code := vterrors.Code(err); code != vtrpcpb.Code_UNIMPLEMENTED {
 		t.Errorf("qre.Execute: %v, want %v", code, vtrpcpb.Code_INVALID_ARGUMENT)
 	}
+}
+
+func TestQueryExecutorPlanPassDmlReplaceInto(t *testing.T) {
+	db := setUpQueryExecutorTest(t)
+	defer db.Close()
+	query := "replace into test_table values (1)"
+	want := &sqltypes.Result{}
+	db.AddQuery(query, want)
+	ctx := context.Background()
+	// RBR mode
+	tsv := newTestTabletServer(ctx, noFlags, db)
+	defer tsv.StopService()
+	txid := newTransaction(tsv)
+	qre := newTestQueryExecutor(ctx, tsv, query, txid)
+	tsv.qe.binlogFormat = connpool.BinlogFormatRow
+	checkPlanID(t, planbuilder.PlanPassDML, qre.plan.PlanID)
+	got, err := qre.Execute()
+	if err != nil {
+		t.Fatalf("qre.Execute() = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got: %v, want: %v", got, want)
+	}
+	wantqueries := []string{query}
+	gotqueries := fetchRecordedQueries(qre)
+	if !reflect.DeepEqual(gotqueries, wantqueries) {
+		t.Errorf("queries: %v, want %v", gotqueries, wantqueries)
+	}
+
+	// Statement mode
+	tsv.qe.binlogFormat = connpool.BinlogFormatStatement
+	_, err = qre.Execute()
+	if code := vterrors.Code(err); code != vtrpcpb.Code_UNIMPLEMENTED {
+		t.Errorf("qre.Execute: %v, want %v", code, vtrpcpb.Code_INVALID_ARGUMENT)
+	}
+	testCommitHelper(t, tsv, qre)
 }
 
 func TestQueryExecutorPlanInsertPk(t *testing.T) {

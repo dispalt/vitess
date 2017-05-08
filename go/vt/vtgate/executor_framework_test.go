@@ -1,6 +1,18 @@
-// Copyright 2014, Google Inc. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+Copyright 2017 Google Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package vtgate
 
@@ -10,10 +22,11 @@ import (
 	"github.com/youtube/vitess/go/vt/vttablet/sandboxconn"
 	"golang.org/x/net/context"
 
+	querypb "github.com/youtube/vitess/go/vt/proto/query"
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
 )
 
-var routerVSchema = `
+var executorVSchema = `
 {
 	"sharded": true,
 	"vindexes": {
@@ -156,20 +169,28 @@ var unshardedVSchema = `
 				"column": "id",
 				"sequence": "user_seq"
 			}
-		}
+		},
+		"simple": {}
 	}
 }
 `
 
-func createRouterEnv() (router *Router, sbc1, sbc2, sbclookup *sandboxconn.SandboxConn) {
+func createExecutorEnv() (executor *Executor, sbc1, sbc2, sbclookup *sandboxconn.SandboxConn) {
 	cell := "aa"
 	hc := discovery.NewFakeHealthCheck()
-	s := createSandbox("TestRouter")
-	s.VSchema = routerVSchema
+	s := createSandbox("TestExecutor")
+	s.VSchema = executorVSchema
 	serv := new(sandboxTopo)
-	scatterConn := newTestScatterConn(hc, serv, cell)
-	sbc1 = hc.AddTestTablet(cell, "-20", 1, "TestRouter", "-20", topodatapb.TabletType_MASTER, true, 1, nil)
-	sbc2 = hc.AddTestTablet(cell, "40-60", 1, "TestRouter", "40-60", topodatapb.TabletType_MASTER, true, 1, nil)
+	resolver := newTestResolver(hc, serv, cell)
+	sbc1 = hc.AddTestTablet(cell, "-20", 1, "TestExecutor", "-20", topodatapb.TabletType_MASTER, true, 1, nil)
+	sbc2 = hc.AddTestTablet(cell, "40-60", 1, "TestExecutor", "40-60", topodatapb.TabletType_MASTER, true, 1, nil)
+	// Create these connections so scatter queries don't fail.
+	_ = hc.AddTestTablet(cell, "20-40", 1, "TestExecutor", "20-40", topodatapb.TabletType_MASTER, true, 1, nil)
+	_ = hc.AddTestTablet(cell, "60-60", 1, "TestExecutor", "60-80", topodatapb.TabletType_MASTER, true, 1, nil)
+	_ = hc.AddTestTablet(cell, "80-a0", 1, "TestExecutor", "80-a0", topodatapb.TabletType_MASTER, true, 1, nil)
+	_ = hc.AddTestTablet(cell, "a0-c0", 1, "TestExecutor", "a0-c0", topodatapb.TabletType_MASTER, true, 1, nil)
+	_ = hc.AddTestTablet(cell, "c0-e0", 1, "TestExecutor", "c0-e0", topodatapb.TabletType_MASTER, true, 1, nil)
+	_ = hc.AddTestTablet(cell, "e0-", 1, "TestExecutor", "e0-", topodatapb.TabletType_MASTER, true, 1, nil)
 
 	createSandbox(KsTestUnsharded)
 	sbclookup = hc.AddTestTablet(cell, "0", 1, KsTestUnsharded, "0", topodatapb.TabletType_MASTER, true, 1, nil)
@@ -179,27 +200,32 @@ func createRouterEnv() (router *Router, sbc1, sbc2, sbclookup *sandboxconn.Sandb
 
 	getSandbox(KsTestUnsharded).VSchema = unshardedVSchema
 
-	router = NewRouter(context.Background(), serv, cell, "", scatterConn, false)
-	return router, sbc1, sbc2, sbclookup
+	executor = NewExecutor(context.Background(), serv, cell, "", resolver, false)
+	return executor, sbc1, sbc2, sbclookup
 }
 
-func routerExec(router *Router, sql string, bv map[string]interface{}) (*sqltypes.Result, error) {
-	return router.Execute(context.Background(),
+func executorExec(executor *Executor, sql string, bv map[string]interface{}) (*sqltypes.Result, error) {
+	return executor.Execute(context.Background(),
+		masterSession,
 		sql,
-		bv,
-		"",
-		topodatapb.TabletType_MASTER,
-		nil,
-		false,
-		nil)
+		bv)
 }
 
-func routerStream(router *Router, sql string) (qr *sqltypes.Result, err error) {
+func executorStream(executor *Executor, sql string) (qr *sqltypes.Result, err error) {
 	results := make(chan *sqltypes.Result, 10)
-	err = router.StreamExecute(context.Background(), sql, nil, "", topodatapb.TabletType_MASTER, nil, func(qr *sqltypes.Result) error {
-		results <- qr
-		return nil
-	})
+	err = executor.StreamExecute(
+		context.Background(),
+		masterSession,
+		sql,
+		nil,
+		querypb.Target{
+			TabletType: topodatapb.TabletType_MASTER,
+		},
+		func(qr *sqltypes.Result) error {
+			results <- qr
+			return nil
+		},
+	)
 	close(results)
 	if err != nil {
 		return nil, err
