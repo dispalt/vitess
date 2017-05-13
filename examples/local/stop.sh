@@ -6,6 +6,8 @@ set -x
 ./vtctld-down.sh
 ./zk-down.sh
 if [ -z "$VTDATAROOT" ]; then
-    rm -rf $VTDATAROOT/tmp
+    echo "Set VTDATAROOT"
     exit 1
+else
+    rm -rf $VTDATAROOT/tmp
 fi 
