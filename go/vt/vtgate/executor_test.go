@@ -18,14 +18,16 @@ package vtgate
 
 import (
 	"bytes"
-	"context"
 	"html/template"
 	"reflect"
 	"strings"
 	"testing"
 
+	"golang.org/x/net/context"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/youtube/vitess/go/sqltypes"
+	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
 
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
 	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
@@ -104,6 +106,21 @@ func TestExecutorSet(t *testing.T) {
 	}, {
 		in:  "set AUTOCOMMIT = 'aa'",
 		err: "unexpected value type for autocommit: string",
+	}, {
+		in:  "set autocommit = 2",
+		err: "unexpected value for autocommit: 2",
+	}, {
+		in:  "set client_found_rows=1",
+		out: &vtgatepb.Session{Options: &querypb.ExecuteOptions{ClientFoundRows: true}},
+	}, {
+		in:  "set client_found_rows=0",
+		out: &vtgatepb.Session{},
+	}, {
+		in:  "set client_found_rows='aa'",
+		err: "unexpected value type for client_found_rows: string",
+	}, {
+		in:  "set client_found_rows=2",
+		err: "unexpected value for client_found_rows: 2",
 	}, {
 		in:  "set transaction_mode = 'unspecified'",
 		out: &vtgatepb.Session{TransactionMode: vtgatepb.TransactionMode_UNSPECIFIED},
@@ -273,7 +290,7 @@ func TestExecutorShow(t *testing.T) {
 
 	session = &vtgatepb.Session{}
 	qr, err = executor.Execute(context.Background(), session, "show vschema_tables", nil)
-	want := noKeyspaceErr.Error()
+	want := errNoKeyspace.Error()
 	if err == nil || err.Error() != want {
 		t.Errorf("show vschema_tables: %v, want %v", err, want)
 	}
@@ -366,7 +383,7 @@ func TestExecutorOther(t *testing.T) {
 	}
 
 	_, err := executor.Execute(context.Background(), &vtgatepb.Session{}, "analyze", nil)
-	want := noKeyspaceErr.Error()
+	want := errNoKeyspace.Error()
 	if err == nil || err.Error() != want {
 		t.Errorf("show vschema_tables: %v, want %v", err, want)
 	}
@@ -428,7 +445,7 @@ func TestExecutorDDL(t *testing.T) {
 	}
 
 	_, err := executor.Execute(context.Background(), &vtgatepb.Session{}, "create", nil)
-	want := noKeyspaceErr.Error()
+	want := errNoKeyspace.Error()
 	if err == nil || err.Error() != want {
 		t.Errorf("show vschema_tables: %v, want %v", err, want)
 	}
@@ -648,6 +665,8 @@ func TestGetPlanNormalized(t *testing.T) {
 }
 
 func TestParseTarget(t *testing.T) {
+	r, _, _, _ := createExecutorEnv()
+
 	testcases := []struct {
 		targetString string
 		target       querypb.Target
@@ -697,8 +716,27 @@ func TestParseTarget(t *testing.T) {
 	}}
 
 	for _, tcase := range testcases {
-		if target := parseTarget(tcase.targetString); target != tcase.target {
-			t.Errorf("parseKeyspaceShard(%s): %v, want %v", tcase.targetString, target, tcase.target)
+		if target := r.ParseTarget(tcase.targetString); target != tcase.target {
+			t.Errorf("ParseTarget(%s): %v, want %v", tcase.targetString, target, tcase.target)
 		}
+	}
+}
+
+func TestParseTargetSingleKeyspace(t *testing.T) {
+	r, _, _, _ := createExecutorEnv()
+	altVSchema := &vindexes.VSchema{
+		Keyspaces: map[string]*vindexes.KeyspaceSchema{
+			KsTestUnsharded: r.vschema.Keyspaces[KsTestUnsharded],
+		},
+	}
+	r.vschema = altVSchema
+
+	got := r.ParseTarget("@master")
+	want := querypb.Target{
+		Keyspace:   KsTestUnsharded,
+		TabletType: topodatapb.TabletType_MASTER,
+	}
+	if got != want {
+		t.Errorf("ParseTarget(%s): %v, want %v", "@master", got, want)
 	}
 }

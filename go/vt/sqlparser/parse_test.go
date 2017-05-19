@@ -590,6 +590,15 @@ func TestValid(t *testing.T) {
 		input:  "update /* table alias */ tt aa set aa.cc = 3",
 		output: "update /* table alias */ tt as aa set aa.cc = 3",
 	}, {
+		input:  "update (select id from foo) subqalias set id = 4",
+		output: "update (select id from foo) as subqalias set id = 4",
+	}, {
+		input:  "update foo f, bar b set f.id = b.id where b.name = 'test'",
+		output: "update foo as f, bar as b set f.id = b.id where b.name = 'test'",
+	}, {
+		input:  "update foo f join bar b on f.name = b.name set f.id = b.id where b.name = 'test'",
+		output: "update foo as f join bar as b on f.name = b.name set f.id = b.id where b.name = 'test'",
+	}, {
 		input: "delete /* simple */ from a",
 	}, {
 		input: "delete /* a.b */ from a.b",
@@ -599,6 +608,10 @@ func TestValid(t *testing.T) {
 		input: "delete /* order */ from a order by b desc",
 	}, {
 		input: "delete /* limit */ from a limit b",
+	}, {
+		input: "delete a from a join b on a.id = b.id where b.name = 'test'",
+	}, {
+		input: "delete a, b from a, b where a.id = b.id and b.name = 'test'",
 	}, {
 		input: "set /* simple */ a = 3",
 	}, {
@@ -1070,6 +1083,8 @@ func TestConvert(t *testing.T) {
 		input: "select convert('abc', datetime) from t",
 	}, {
 		input: "select convert('abc', json) from t",
+	}, {
+		input: "select convert('abc' using ascii) from t",
 	}}
 
 	for _, tcase := range validSQL {
@@ -1156,9 +1171,6 @@ func TestErrors(t *testing.T) {
 		input:  "update a set c = values(1)",
 		output: "syntax error at position 26 near '1'",
 	}, {
-		input:  "update a set c = last_insert_id(1)",
-		output: "syntax error at position 32 near 'last_insert_id'",
-	}, {
 		input: "select(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F" +
 			"(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(" +
 			"F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F(F" +
@@ -1212,9 +1224,6 @@ func TestErrors(t *testing.T) {
 	}, {
 		input:  "select 1 from t where binary",
 		output: "syntax error at position 30",
-	}, {
-		input:  "update (select id from foo) subqalias set id = 4",
-		output: "syntax error at position 9",
 	}, {
 		input:  "select match(a1, a2) against ('foo' in boolean mode with query expansion) from t",
 		output: "syntax error at position 57 near 'with'",

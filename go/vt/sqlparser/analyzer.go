@@ -48,11 +48,13 @@ const (
 // Preview analyzes the beginning of the query using a simpler and faster
 // textual comparison to identify the statement type.
 func Preview(sql string) int {
-	trimmed := strings.TrimFunc(sql, unicode.IsSpace)
+	trimmed := StripLeadingComments(sql)
+
 	firstWord := trimmed
 	if end := strings.IndexFunc(trimmed, unicode.IsSpace); end != -1 {
 		firstWord = trimmed[:end]
 	}
+
 	// Comparison is done in order of priority.
 	loweredFirstWord := strings.ToLower(firstWord)
 	switch loweredFirstWord {
@@ -102,7 +104,7 @@ func IsDML(sql string) bool {
 // GetTableName returns the table name from the SimpleTableExpr
 // only if it's a simple expression. Otherwise, it returns "".
 func GetTableName(node SimpleTableExpr) TableIdent {
-	if n, ok := node.(*TableName); ok && n.Qualifier.IsEmpty() {
+	if n, ok := node.(TableName); ok && n.Qualifier.IsEmpty() {
 		return n.Name
 	}
 	// sub-select or '.' expression
@@ -219,6 +221,8 @@ func StringIn(str string, values ...string) bool {
 
 // ExtractSetValues returns a map of key-value pairs
 // if the query is a SET statement. Values can be int64 or string.
+// Since set variable names are case insensitive, all keys are returned
+// as lower case.
 func ExtractSetValues(sql string) (map[string]interface{}, error) {
 	stmt, err := Parse(sql)
 	if err != nil {
@@ -230,7 +234,7 @@ func ExtractSetValues(sql string) (map[string]interface{}, error) {
 	}
 	result := make(map[string]interface{})
 	for _, expr := range setStmt.Exprs {
-		if expr.Name.Qualifier != nil {
+		if !expr.Name.Qualifier.IsEmpty() {
 			return nil, fmt.Errorf("invalid syntax: %v", String(expr.Name))
 		}
 		key := expr.Name.Name.Lowered()

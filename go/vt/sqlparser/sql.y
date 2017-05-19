@@ -44,40 +44,41 @@ func forceEOF(yylex interface{}) {
 %}
 
 %union {
-  empty       struct{}
-  statement   Statement
-  selStmt     SelectStatement
-  ins         *Insert
-  byt         byte
-  bytes       []byte
-  bytes2      [][]byte
-  str         string
-  selectExprs SelectExprs
-  selectExpr  SelectExpr
-  columns     Columns
-  colName     *ColName
-  tableExprs  TableExprs
-  tableExpr   TableExpr
-  tableName   *TableName
-  indexHints  *IndexHints
-  expr        Expr
-  exprs       Exprs
-  boolVal     BoolVal
-  colTuple    ColTuple
-  values      Values
-  valTuple    ValTuple
-  subquery    *Subquery
-  whens       []*When
-  when        *When
-  orderBy     OrderBy
-  order       *Order
-  limit       *Limit
-  updateExprs UpdateExprs
-  updateExpr  *UpdateExpr
-  colIdent    ColIdent
-  colIdents   []ColIdent
-  tableIdent  TableIdent
-  convertType *ConvertType
+  empty         struct{}
+  statement     Statement
+  selStmt       SelectStatement
+  ins           *Insert
+  byt           byte
+  bytes         []byte
+  bytes2        [][]byte
+  str           string
+  selectExprs   SelectExprs
+  selectExpr    SelectExpr
+  columns       Columns
+  colName       *ColName
+  tableExprs    TableExprs
+  tableExpr     TableExpr
+  tableName     TableName
+  tableNames    TableNames
+  indexHints    *IndexHints
+  expr          Expr
+  exprs         Exprs
+  boolVal       BoolVal
+  colTuple      ColTuple
+  values        Values
+  valTuple      ValTuple
+  subquery      *Subquery
+  whens         []*When
+  when          *When
+  orderBy       OrderBy
+  order         *Order
+  limit         *Limit
+  updateExprs   UpdateExprs
+  updateExpr    *UpdateExpr
+  colIdent      ColIdent
+  colIdents     []ColIdent
+  tableIdent    TableIdent
+  convertType   *ConvertType
   aliasedTableName *AliasedTableExpr
 }
 
@@ -159,6 +160,7 @@ func forceEOF(yylex interface{}) {
 %type <expr> expression
 %type <tableExprs> from_opt table_references
 %type <tableExpr> table_reference table_factor join_table
+%type <tableNames> table_name_list
 %type <str> inner_join outer_join natural_join
 %type <tableName> table_name into_table_name
 %type <aliasedTableName> aliased_table_name
@@ -317,15 +319,33 @@ insert_or_replace:
   }
 
 update_statement:
-  UPDATE comment_opt aliased_table_name SET update_list where_expression_opt order_by_opt limit_opt
+  UPDATE comment_opt table_references SET update_list where_expression_opt order_by_opt limit_opt
   {
-    $$ = &Update{Comments: Comments($2), Table: $3, Exprs: $5, Where: NewWhere(WhereStr, $6), OrderBy: $7, Limit: $8}
+    $$ = &Update{Comments: Comments($2), TableExprs: $3, Exprs: $5, Where: NewWhere(WhereStr, $6), OrderBy: $7, Limit: $8}
   }
 
 delete_statement:
   DELETE comment_opt FROM table_name where_expression_opt order_by_opt limit_opt
   {
-    $$ = &Delete{Comments: Comments($2), Table: $4, Where: NewWhere(WhereStr, $5), OrderBy: $6, Limit: $7}
+    $$ = &Delete{Comments: Comments($2), TableExprs:  TableExprs{&AliasedTableExpr{Expr:$4}}, Where: NewWhere(WhereStr, $5), OrderBy: $6, Limit: $7}
+  }
+| DELETE comment_opt table_name_list from_or_using table_references where_expression_opt
+  {
+    $$ = &Delete{Comments: Comments($2), Targets: $3, TableExprs: $5, Where: NewWhere(WhereStr, $6)}
+  }
+
+from_or_using:
+  FROM {}
+| USING {}
+
+table_name_list:
+  table_name
+  {
+    $$ = TableNames{$1}
+  }
+| table_name_list ',' table_name
+  {
+    $$ = append($$, $3)
   }
 
 set_statement:
@@ -551,15 +571,15 @@ select_expression:
   }
 | expression as_ci_opt
   {
-    $$ = &NonStarExpr{Expr: $1, As: $2}
+    $$ = &AliasedExpr{Expr: $1, As: $2}
   }
 | table_id '.' '*'
   {
-    $$ = &StarExpr{TableName: &TableName{Name: $1}}
+    $$ = &StarExpr{TableName: TableName{Name: $1}}
   }
 | table_id '.' reserved_table_id '.' '*'
   {
-    $$ = &StarExpr{TableName: &TableName{Qualifier: $1, Name: $3}}
+    $$ = &StarExpr{TableName: TableName{Qualifier: $1, Name: $3}}
   }
 
 as_ci_opt:
@@ -584,7 +604,7 @@ col_alias:
 
 from_opt:
   {
-    $$ = TableExprs{&AliasedTableExpr{Expr:&TableName{Name: NewTableIdent("dual")}}}
+    $$ = TableExprs{&AliasedTableExpr{Expr:TableName{Name: NewTableIdent("dual")}}}
   }
 | FROM table_references
   {
@@ -738,11 +758,11 @@ into_table_name:
 table_name:
   table_id
   {
-    $$ = &TableName{Name: $1}
+    $$ = TableName{Name: $1}
   }
 | table_id '.' reserved_table_id
   {
-    $$ = &TableName{Qualifier: $1, Name: $3}
+    $$ = TableName{Qualifier: $1, Name: $3}
   }
 
 index_hint_list:
@@ -1139,13 +1159,13 @@ function_call_keyword:
   {
     $$ = &ConvertExpr{Expr: $3, Type: $5}
   }
-| CONVERT openb expression USING convert_type closeb
-  {
-    $$ = &ConvertExpr{Expr: $3, Type: $5}
-  }
 | CAST openb expression AS convert_type closeb
   {
     $$ = &ConvertExpr{Expr: $3, Type: $5}
+  }
+| CONVERT openb expression USING charset closeb
+  {
+    $$ = &ConvertUsingExpr{Expr: $3, Type: $5}
   }
 | MATCH openb select_expression_list closeb AGAINST openb value_expression match_option closeb
   {
@@ -1339,11 +1359,11 @@ column_name:
   }
 | table_id '.' reserved_sql_id
   {
-    $$ = &ColName{Qualifier: &TableName{Name: $1}, Name: $3}
+    $$ = &ColName{Qualifier: TableName{Name: $1}, Name: $3}
   }
 | table_id '.' reserved_table_id '.' reserved_sql_id
   {
-    $$ = &ColName{Qualifier: &TableName{Qualifier: $1, Name: $3}, Name: $5}
+    $$ = &ColName{Qualifier: TableName{Qualifier: $1, Name: $3}, Name: $5}
   }
 
 value:
@@ -1812,6 +1832,7 @@ non_reserved_keyword:
 | UNUSED
 | VIEW
 | WITH
+| LAST_INSERT_ID
 
 openb:
   '('

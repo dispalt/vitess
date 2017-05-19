@@ -26,8 +26,8 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysqlconn/fakesqldb"
-	"github.com/youtube/vitess/go/sqldb"
+	"github.com/youtube/vitess/go/mysql"
+	"github.com/youtube/vitess/go/mysql/fakesqldb"
 	"github.com/youtube/vitess/go/sqltypes"
 
 	querypb "github.com/youtube/vitess/go/vt/proto/query"
@@ -67,7 +67,7 @@ func TestDBConnExec(t *testing.T) {
 		t.Errorf("Exec: %v, want %v", expectedResult, result)
 	}
 	// Exec fail
-	db.AddRejectedQuery(sql, &sqldb.SQLError{
+	db.AddRejectedQuery(sql, &mysql.SQLError{
 		Num:     2012,
 		Message: "connection fail",
 		Query:   "",
@@ -92,7 +92,7 @@ func TestDBConnKill(t *testing.T) {
 	// Kill failed because we are not able to connect to the database
 	db.EnableConnFail()
 	err = dbConn.Kill("test kill")
-	want := "Lost connection"
+	want := "errno 2013"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("Exec: %v, want %s", err, want)
 	}

@@ -106,6 +106,12 @@ func init() {
 func TestPlan(t *testing.T) {
 	vschema := loadSchema(t, "schema_test.json")
 
+	// You will notice that some tests expect user.Id instead of user.id.
+	// This is because we now pre-create vindex columns in the symbol
+	// table, which come from vschema. In the test vschema,
+	// the column is named as Id. This is to make sure that
+	// column names are case-preserved, but treated as
+	// case-insensitive even if they come from the vschema.
 	testFile(t, "from_cases.txt", vschema)
 	testFile(t, "filter_cases.txt", vschema)
 	testFile(t, "select_cases.txt", vschema)
@@ -136,8 +142,12 @@ type vschemaWrapper struct {
 	v *vindexes.VSchema
 }
 
-func (vw *vschemaWrapper) Find(ks, tab sqlparser.TableIdent) (*vindexes.Table, error) {
-	return vw.v.Find(ks.String(), tab.String())
+func (vw *vschemaWrapper) Find(tab sqlparser.TableName) (*vindexes.Table, error) {
+	return vw.v.Find(tab.Qualifier.String(), tab.Name.String())
+}
+
+func (vw *vschemaWrapper) DefaultKeyspace() (*vindexes.Keyspace, error) {
+	return vw.v.Keyspaces["main"].Keyspace, nil
 }
 
 func testFile(t *testing.T, filename string, vschema *vindexes.VSchema) {

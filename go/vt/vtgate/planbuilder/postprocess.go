@@ -41,7 +41,7 @@ func pushGroupBy(groupBy sqlparser.GroupBy, bldr builder) error {
 	err := sqlparser.Walk(func(node sqlparser.SQLNode) (kontinue bool, err error) {
 		switch node := node.(type) {
 		case *sqlparser.ColName:
-			_, _, err := bldr.Symtab().Find(node, true)
+			_, _, err := bldr.Symtab().Find(node)
 			if err != nil {
 				return false, err
 			}
@@ -60,7 +60,7 @@ func pushGroupBy(groupBy sqlparser.GroupBy, bldr builder) error {
 	// It's a scatter route. We can allow group by if it references a
 	// column with a unique vindex.
 	for _, expr := range groupBy {
-		vindex := bldr.Symtab().Vindex(expr, rb, true)
+		vindex := bldr.Symtab().Vindex(expr, rb)
 		if vindex != nil && vindexes.IsUnique(vindex) {
 			rb.SetGroupBy(groupBy)
 			return nil
@@ -95,18 +95,24 @@ func pushOrderBy(orderBy sqlparser.OrderBy, bldr builder) error {
 		var rb *route
 
 		if node, ok := order.Expr.(*sqlparser.SQLVal); ok && node.Type == sqlparser.IntVal {
+			// This block handles constructs that use ordinals for 'ORDER BY'. For example:
+			// SELECT a, b, c FROM t1, t2 ORDER BY 1, 2, 3.
+			// If this query is broken into two, the ordinals would have to be renumbered
+			// as follows:
+			// 1. SELECT a, b FROM t1 ORDER BY 1, 2
+			// 2. SELECT c FROM t2 ORDER BY 1 // instead of 3.
 			num, err := strconv.ParseInt(string(node.Val), 0, 64)
 			if err != nil {
 				return fmt.Errorf("error parsing order by clause: %s", sqlparser.String(node))
 			}
-			if num < 1 || num > int64(len(bldr.Symtab().Colsyms)) {
+			if num < 1 || num > int64(len(bldr.Symtab().ResultColumns)) {
 				return errors.New("order by column number out of range")
 			}
-			colsym := bldr.Symtab().Colsyms[num-1]
-			rb = colsym.Route()
+			rc := bldr.Symtab().ResultColumns[num-1]
+			rb = rc.column.Route()
 			// We have to recompute the column number.
-			for num, s := range rb.Colsyms {
-				if s == colsym {
+			for num, s := range rb.ResultColumns {
+				if s == rc {
 					pushOrder = &sqlparser.Order{
 						Expr:      sqlparser.NewIntVal(strconv.AppendInt(nil, int64(num+1), 10)),
 						Direction: order.Direction,
@@ -122,7 +128,7 @@ func pushOrderBy(orderBy sqlparser.OrderBy, bldr builder) error {
 			err := sqlparser.Walk(func(node sqlparser.SQLNode) (kontinue bool, err error) {
 				switch node := node.(type) {
 				case *sqlparser.ColName:
-					curRoute, _, err := bldr.Symtab().Find(node, true)
+					curRoute, _, err := bldr.Symtab().Find(node)
 					if err != nil {
 						return false, err
 					}
@@ -141,14 +147,14 @@ func pushOrderBy(orderBy sqlparser.OrderBy, bldr builder) error {
 		if rb == nil {
 			return errors.New("unsupported: complex order by")
 		}
-		if rb.Order() < routeNumber {
+		if rb.Order < routeNumber {
 			return errors.New("unsupported: complex join and out of sequence order by")
 		}
 		if !rb.IsSingle() {
 			return errors.New("unsupported: scatter and order by")
 		}
-		routeNumber = rb.Order()
-		if err := rb.AddOrder(pushOrder); err != nil {
+		routeNumber = rb.Order
+		if err := rb.AddOrderBy(pushOrder); err != nil {
 			return err
 		}
 	}
