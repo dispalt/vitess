@@ -53,7 +53,7 @@ var (
 	healthCheckTopologyRefresh = flag.Duration("binlog_player_healthcheck_topology_refresh", 30*time.Second, "refresh interval for re-reading the topology")
 	healthcheckRetryDelay      = flag.Duration("binlog_player_healthcheck_retry_delay", 5*time.Second, "delay before retrying a failed healthcheck")
 	healthCheckTimeout         = flag.Duration("binlog_player_healthcheck_timeout", time.Minute, "the health check timeout period")
-	sourceTabletTypeStr        = flag.String("binlog_player_tablet_type", "REPLICA", "which tablet type that is used as a source")
+	sourceTabletTypeStr        = flag.String("binlog_player_tablet_type", "REPLICA", "comma separated list of tablet types used as a source")
 )
 
 func init() {
@@ -312,14 +312,14 @@ func (bpc *BinlogPlayerController) Iteration() (err error) {
 		return fmt.Errorf("not starting because flag '%v' is set", binlogplayer.BlpFlagDontStart)
 	}
 
-	sourceTabletType, err := topoproto.ParseTabletType(*sourceTabletTypeStr)
+	sourceTabletTypes, err := topoproto.ParseTabletTypes(*sourceTabletTypeStr)
 	if err != nil {
-		return fmt.Errorf("unknown tablet type: %v", *sourceTabletTypeStr)
+		return fmt.Errorf("failed to parse list of source tablet types: %v", *sourceTabletTypeStr)
 	}
 
-	// wait for the tablet set (usefull for the first run at least, fast for next runs)
-	if err := bpc.tabletStatsCache.WaitForTablets(bpc.ctx, bpc.cell, bpc.sourceShard.Keyspace, bpc.sourceShard.Shard, []topodatapb.TabletType{sourceTabletType}); err != nil {
-		return fmt.Errorf("error waiting for tablets for %v %v %v: %v", bpc.cell, bpc.sourceShard.String(), sourceTabletType, err)
+	// wait for the tablet set (useful for the first run at least, fast for next runs)
+	if err := bpc.tabletStatsCache.WaitForTablets(bpc.ctx, bpc.cell, bpc.sourceShard.Keyspace, bpc.sourceShard.Shard, sourceTabletTypes); err != nil {
+		return fmt.Errorf("error waiting for tablets for %v %v %v: %v", bpc.cell, bpc.sourceShard.String(), sourceTabletTypes, err)
 	}
 
 	// Find the server list from the health check.
@@ -327,9 +327,13 @@ func (bpc *BinlogPlayerController) Iteration() (err error) {
 	// not return non-serving tablets. We must include non-serving tablets because
 	// REPLICA source tablets may not be serving anymore because their traffic was
 	// already migrated to the destination shards.
-	addrs := discovery.RemoveUnhealthyTablets(bpc.tabletStatsCache.GetTabletStats(bpc.sourceShard.Keyspace, bpc.sourceShard.Shard, sourceTabletType))
+	var addrs []discovery.TabletStats
+	for _, sourceTabletType := range sourceTabletTypes {
+		typeAddrs := discovery.RemoveUnhealthyTablets(bpc.tabletStatsCache.GetTabletStats(bpc.sourceShard.Keyspace, bpc.sourceShard.Shard, sourceTabletType))
+		addrs = append(addrs, typeAddrs...)
+	}
 	if len(addrs) == 0 {
-		return fmt.Errorf("can't find any healthy source tablet for %v %v %v", bpc.cell, bpc.sourceShard.String(), sourceTabletType)
+		return fmt.Errorf("can't find any healthy source tablet for %v %v %v", bpc.cell, bpc.sourceShard.String(), sourceTabletTypes)
 	}
 	newServerIndex := rand.Intn(len(addrs))
 	tablet := addrs[newServerIndex].Tablet

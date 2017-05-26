@@ -146,13 +146,26 @@ var SlaveTabletTypes = []topodatapb.TabletType{
 	topodatapb.TabletType_DRAINED,
 }
 
-// ParseTabletType parses the tablet type into the enum
+// ParseTabletType parses the tablet type into the enum.
 func ParseTabletType(param string) (topodatapb.TabletType, error) {
 	value, ok := topodatapb.TabletType_value[strings.ToUpper(param)]
 	if !ok {
 		return topodatapb.TabletType_UNKNOWN, fmt.Errorf("unknown TabletType %v", param)
 	}
 	return topodatapb.TabletType(value), nil
+}
+
+// ParseTabletTypes parses a comma separated list of tablet types and returns a slice with the respective enums.
+func ParseTabletTypes(param string) ([]topodatapb.TabletType, error) {
+	var tabletTypes []topodatapb.TabletType
+	for _, typeStr := range strings.Split(param, ",") {
+		t, err := ParseTabletType(typeStr)
+		if err != nil {
+			return nil, err
+		}
+		tabletTypes = append(tabletTypes, t)
+	}
+	return tabletTypes, nil
 }
 
 // TabletTypeLString returns a lower case version of the tablet type,
